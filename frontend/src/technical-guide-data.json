@@ -1,0 +1,1471 @@
+[
+  {
+    "id": 0,
+    "title": "실습 환경과 통신 경계",
+    "summary": "처음에는 설치 명령보다 “어떤 프로그램이 어디에서 실행되고 누구와 통신하는가”를 이해합니다. 브라우저, Python API, RabbitMQ는 서로 다른 프로세스이며 각자 다른 접속 주소와 책임을 갖습니다.",
+    "flow": [
+      "브라우저 · localhost:5173",
+      "HTTP / 실습 토큰",
+      "FastAPI · localhost:8000",
+      "AMQP 5672",
+      "RabbitMQ · lab vhost"
+    ],
+    "terms": [
+      {
+        "name": "Container",
+        "meaning": "이미지에 담긴 프로그램을 실행하는 분리된 환경입니다. 이미지 다운로드와 컨테이너 실행은 서로 다른 단계입니다."
+      },
+      {
+        "name": "Compose service",
+        "meaning": "RabbitMQ·API·화면을 서비스 이름과 설정으로 묶은 실행 정의입니다."
+      },
+      {
+        "name": "Port / host",
+        "meaning": "포트는 서버의 입구 번호, host는 서버 위치입니다. localhost는 그 코드를 실행하는 환경 자신을 가리킵니다."
+      },
+      {
+        "name": "vhost",
+        "meaning": "한 RabbitMQ 안에서 Queue·Exchange를 분리하는 논리 공간입니다. 현재 실습은 lab을 사용합니다."
+      },
+      {
+        "name": "Volume",
+        "meaning": "컨테이너를 교체해도 유지할 데이터를 별도로 보관합니다. 컨테이너 삭제와 데이터 볼륨 삭제는 다릅니다."
+      }
+    ],
+    "sections": [
+      {
+        "title": "왜 Gateway를 거칠까요?",
+        "paragraphs": [
+          "브라우저는 HTTP로 버튼 요청을 보냅니다. Gateway는 토큰과 입력을 확인하고 Pika로 RabbitMQ에 연결합니다. 이 구조에서 Broker 계정은 서버 환경변수에 있고, 브라우저에는 RabbitMQ 비밀번호를 주지 않습니다.",
+          "localhost:5173은 화면, localhost:8000은 API, localhost:15672는 RabbitMQ 관리 화면입니다. 메시지 전송은 AMQP 5672를 사용합니다. 관리 화면이 열린다는 사실만으로 발행·소비가 성공한 것은 아닙니다."
+        ]
+      },
+      {
+        "title": "Docker 안과 밖에서 주소가 달라지는 이유",
+        "paragraphs": [
+          "API 컨테이너 안의 localhost는 API 컨테이너 자신입니다. RabbitMQ 서비스에 접속할 때는 Compose 네트워크의 서비스 이름 rabbitmq를 사용합니다. PC의 브라우저에서는 PC에 공개한 localhost 포트로 접속합니다.",
+          "healthcheck는 실행 준비 상태를 확인합니다. depends_on의 service_healthy는 시작 순서를 도와주지만 이후 장애나 업무 성공을 자동으로 해결하지 않습니다. /health와 실제 Broker 연결 확인을 따로 관찰합니다."
+        ]
+      },
+      {
+        "title": "환경변수와 인증",
+        "paragraphs": [
+          ".env는 로컬 설정 파일입니다. Docker가 값을 API와 Broker에 전달하고 Python settings가 읽습니다. LAB_TOKEN은 API 실습 요청을 허용하는 값이며 RabbitMQ 계정 비밀번호와 다릅니다. 토큰을 코드나 GitHub에 넣지 않습니다.",
+          "CORS는 브라우저가 어느 출처의 화면에서 API를 호출할 수 있는지 제한합니다. CORS 허용과 토큰 인증은 별개입니다. 게시된 HTTPS 화면에서 HTTP 로컬 Gateway를 바로 연결하기 어려우므로 로컬 실습 화면을 사용합니다."
+        ]
+      }
+    ],
+    "codes": [
+      {
+        "title": "실제 코드 · AMQP 연결의 생명주기",
+        "language": "python",
+        "code": "@contextmanager\ndef connection():\n    \"\"\"AMQP 연결을 열고 with 블록 종료 시 닫는다. 접속값은 서버 환경변수에서 읽는다.\"\"\"\n    params = pika.ConnectionParameters(\n        host=settings.rabbit_host, port=settings.rabbit_port,\n        virtual_host=settings.rabbit_vhost,\n        credentials=pika.PlainCredentials(settings.rabbit_user, settings.rabbit_password),\n        heartbeat=30, blocked_connection_timeout=5, socket_timeout=3,\n        stack_timeout=5, connection_attempts=1,\n    )\n    conn = pika.BlockingConnection(params)\n    try:\n        yield conn\n    finally:\n        if conn.is_open:\n            conn.close()",
+        "notes": [
+          "ConnectionParameters는 host·vhost·계정과 연결 timeout을 묶습니다. 실제 값은 settings에서 읽습니다.",
+          "BlockingConnection이 TCP/AMQP 연결을 엽니다. channel은 이 연결 위에서 만들며 발행·ACK 같은 명령을 전달합니다.",
+          "yield 이후 호출자가 작업하고 finally에서 열린 연결을 닫습니다. heartbeat는 연결 생존 확인이며 업무 완료 확인은 아닙니다."
+        ],
+        "path": "backend/app/messaging.py",
+        "kind": "actual",
+        "url": "https://github.com/amirer21/message-flow-lab/blob/main/backend/app/messaging.py"
+      },
+      {
+        "title": "실제 코드 · 실습 API 토큰 확인",
+        "language": "python",
+        "code": "def authorize(x_lab_token: str = Header(default=\"\")):\n    if not settings.lab_token or not secrets.compare_digest(x_lab_token.encode(), settings.lab_token.encode()):\n        raise HTTPException(status_code=401, detail=\"실습 토큰이 일치하지 않습니다.\")",
+        "notes": [
+          "FastAPI Header가 X-Lab-Token을 읽고 compare_digest로 서버 설정값과 비교합니다.",
+          "토큰 불일치는 HTTP 401입니다. 각 실습 API에도 이 검사를 연결해야 인증 없는 메시지 조작을 막을 수 있습니다."
+        ],
+        "path": "backend/app/main.py",
+        "kind": "actual",
+        "url": "https://github.com/amirer21/message-flow-lab/blob/main/backend/app/main.py"
+      }
+    ],
+    "experiments": [
+      {
+        "action": "관리 화면 15672 접속",
+        "expected": "Queue와 연결 상태를 관찰",
+        "reason": "AMQP 메시지 요청과 관리용 HTTP는 다른 통신입니다."
+      },
+      {
+        "action": "실제 연결에 잘못된 LAB_TOKEN 입력",
+        "expected": "인증 오류 표시",
+        "reason": "화면 접근이 허용돼도 실험 요청은 별도로 인증합니다."
+      },
+      {
+        "action": "API 환경의 RABBIT_HOST 확인",
+        "expected": "컨테이너에서는 rabbitmq",
+        "reason": "localhost의 의미가 실행 위치에 따라 달라집니다."
+      }
+    ],
+    "pitfalls": [
+      "기존 볼륨을 남긴 채 .env만 바꾸면 기존 Broker 계정이 자동 변경되는 것은 아닙니다.",
+      "docker compose down -v는 데이터 볼륨까지 지우므로 평상시 종료 명령으로 쓰지 않습니다."
+    ],
+    "questions": [
+      "브라우저가 RabbitMQ에 직접 연결하지 않는 이유를 설명할 수 있나요?",
+      "API 컨테이너에서 localhost:5672로 접속하면 왜 대상이 달라질까요?"
+    ],
+    "sources": [
+      {
+        "title": "프로젝트 실행 구조",
+        "url": "https://github.com/amirer21/message-flow-lab/blob/main/docker-compose.yml"
+      },
+      {
+        "title": "프로젝트 접속 설정",
+        "url": "https://github.com/amirer21/message-flow-lab/blob/main/backend/app/config.py"
+      }
+    ],
+    "status": "actual",
+    "scope": "현재 프로젝트 구현의 핵심 코드를 발췌합니다. 파일의 주변 선언·imports·연결은 생략될 수 있으므로 전체 파일과 함께 읽으세요.",
+    "reviewed_at": "2026-10-06"
+  },
+  {
+    "id": 1,
+    "title": "발행·전달·수동 ACK의 상태 전이",
+    "summary": "Producer와 Consumer를 분리하면 Consumer가 꺼져 있어도 메시지를 먼저 보관할 수 있습니다. 이 단계는 “받았다”와 “완료로 확인했다”를 구분해 Queue의 숫자를 읽는 연습입니다.",
+    "flow": [
+      "Producer 발행",
+      "기본 Exchange",
+      "hello Queue · Ready",
+      "Consumer 전달 · Unacked",
+      "ACK → 다음 전달"
+    ],
+    "terms": [
+      {
+        "name": "Producer / publish",
+        "meaning": "메시지를 만드는 역할과 Broker에 보내는 동작입니다. 이 프로젝트에서는 Gateway가 Producer 코드를 실행합니다."
+      },
+      {
+        "name": "Queue / Ready",
+        "meaning": "Queue는 전달 대기 공간이고 Ready는 아직 전달하지 않은 메시지 수입니다."
+      },
+      {
+        "name": "Consumer / Unacked",
+        "meaning": "Consumer는 메시지를 받는 프로그램입니다. Unacked는 전달됐지만 Broker가 확인을 받지 않은 메시지 수입니다."
+      },
+      {
+        "name": "ACK / delivery_tag",
+        "meaning": "ACK는 Consumer의 전달 완료 응답입니다. delivery_tag는 해당 channel에서 전달을 식별하며 같은 channel에서 ACK해야 합니다."
+      },
+      {
+        "name": "Prefetch 1",
+        "meaning": "이 Consumer가 ACK하지 않은 메시지를 한 개까지만 받는 설정입니다. ACK 후 다음 전달을 관찰할 수 있습니다."
+      }
+    ],
+    "sections": [
+      {
+        "title": "발행은 어떤 데이터로 이루어질까요?",
+        "paragraphs": [
+          "입력한 본문은 JSON으로 감싼 뒤 UTF-8 bytes로 보내고 message_id를 붙입니다. 기본 Exchange의 이름은 빈 문자열입니다. Routing Key에 hello를 넣어 같은 이름의 Queue로 전달하도록 합니다.",
+          "현재 Queue는 durable이고 메시지에는 delivery_mode=2가 있습니다. 하지만 Phase 1은 Publisher Confirm을 사용하지 않습니다. basic_publish 호출이 끝났다는 사실을 발행 요청 전송으로 기록하며 소비 완료나 발행 확인으로 부르지 않습니다."
+        ]
+      },
+      {
+        "title": "전달만으로 메시지를 없애지 않는 이유",
+        "paragraphs": [
+          "auto_ack=False이므로 Broker가 전달한 뒤 ACK를 기다립니다. 본문이 화면에 나타나도 메시지는 Unacked 상태입니다. Queue 안에 Ready만 있는 상태와 Consumer가 이미 받은 상태는 다릅니다.",
+          "세 개를 발행하면 Ready 3 / Unacked 0입니다. Consumer를 시작하면 Ready 2 / Unacked 1이 됩니다. 첫 ACK 후 다음 메시지가 바로 전달될 수 있어 Unacked가 계속 1처럼 보일 수 있습니다. 마지막 ACK 이후 두 숫자가 0이 됩니다."
+        ]
+      },
+      {
+        "title": "브라우저 ACK 요청과 Pika 스레드",
+        "paragraphs": [
+          "브라우저는 현재 attempt_id를 포함해 Gateway에 ACK를 요청합니다. API 스레드가 Pika channel을 직접 조작하지 않고 Python Queue로 명령을 전달합니다. channel을 소유한 Consumer 스레드가 실제 basic_ack를 호출합니다.",
+          "attempt_id 대조는 오래된 버튼 요청이 다음 메시지를 ACK하는 문제를 막습니다. Message ID는 논리 메시지, Attempt ID는 전달 시도입니다. 이 단계의 확인은 본문 확인 실습이며 실제 결제·DB 업무 처리는 하지 않습니다."
+        ]
+      }
+    ],
+    "codes": [
+      {
+        "title": "실제 코드 · Producer 발행",
+        "language": "python",
+        "code": "def publish(body: str, count: int, queue=None):\n    \"\"\"기본 Exchange로 발행한다. 호출 반환은 소비 완료나 Confirm 수신을 뜻하지 않는다.\"\"\"\n    queue = queue or settings.queue\n    message_ids = []\n    with connection() as conn:\n        channel = conn.channel()\n        declare(channel, queue)\n        for index in range(count):\n            message_id = str(uuid4())\n            text = body if count == 1 else f\"{body} {index + 1}\"\n            channel.basic_publish(\n                exchange=\"\", routing_key=queue,\n                body=json.dumps({\"body\": text}, ensure_ascii=False).encode(\"utf-8\"),\n                properties=pika.BasicProperties(\n                    message_id=message_id, correlation_id=message_id,\n                    content_type=\"application/json\", delivery_mode=2,\n                ),\n            )\n            events.record(\"PUBLISH_SENT\", message_id, worker=\"producer-lab\", body=text, exchange=\"\", routing_key=queue, queue=queue)\n            message_ids.append(message_id)\n    # Phase 1 intentionally does not claim publisher-confirm guarantees.\n    return {\"message_ids\": message_ids, \"status\": \"PUBLISH_SENT\", \"publisher_confirmed\": False}",
+        "notes": [
+          "declare는 durable Queue를 준비합니다. count만큼 UUID를 만들고 본문과 properties를 발행합니다.",
+          "exchange=\"\"와 routing_key=queue가 기본 Exchange의 전달 규칙을 사용합니다. properties는 본문 밖의 메시지 메타데이터입니다.",
+          "반환값 publisher_confirmed=False와 PUBLISH_SENT가 현재 관측 범위를 보여 줍니다."
+        ],
+        "path": "backend/app/messaging.py",
+        "kind": "actual",
+        "url": "https://github.com/amirer21/message-flow-lab/blob/main/backend/app/messaging.py"
+      },
+      {
+        "title": "실제 코드 · 현재 전달만 ACK",
+        "language": "python",
+        "code": "def _ack(self, channel, attempt_id):\n    # 이전 버튼 요청이 다음 전달을 ACK하지 않도록 현재 시도를 먼저 대조한다.\n    with self._lock:\n        pending = self._pending\n        tag = self._delivery_tag\n    if not pending or pending[\"attempt_id\"] != attempt_id:\n        raise ValueError(\"현재 전달과 일치하지 않는 ACK입니다.\")\n    channel.basic_ack(delivery_tag=tag)\n    with self._lock:\n        self._pending = None\n        self._delivery_tag = None\n    events.record(\"ACK_SENT\", pending[\"message_id\"], attempt_id=attempt_id, worker=\"consumer-lab\")",
+        "notes": [
+          "현재 pending과 delivery_tag를 읽고 요청 attempt_id를 대조합니다. 일치하지 않으면 완료 처리하지 않습니다.",
+          "basic_ack는 이 전달의 tag를 사용합니다. 그 뒤 앱의 pending을 비우고 ACK_SENT를 기록합니다.",
+          "이 이벤트는 호출 기록입니다. Broker 반영 확인과 업무 완료는 별도이며 실제 Queue 지표도 봅니다."
+        ],
+        "path": "backend/app/consumer.py",
+        "kind": "actual",
+        "url": "https://github.com/amirer21/message-flow-lab/blob/main/backend/app/consumer.py"
+      }
+    ],
+    "experiments": [
+      {
+        "action": "Consumer 없이 3개 발행",
+        "expected": "Ready 3 / Unacked 0",
+        "reason": "Broker가 전달 전 데이터를 보관합니다."
+      },
+      {
+        "action": "Consumer 시작 후 ACK 없이 대기",
+        "expected": "Ready 2 / Unacked 1",
+        "reason": "Prefetch 1이 추가 전달을 제한합니다."
+      },
+      {
+        "action": "세 메시지 차례로 ACK",
+        "expected": "Ready 0 / Unacked 0",
+        "reason": "수신과 확인을 모두 끝냅니다."
+      }
+    ],
+    "pitfalls": [
+      "Ready 0만 보고 업무 성공을 결론 내리지 않습니다. Unacked나 업무 결과가 남을 수 있습니다.",
+      "ACK를 보내는 코드와 업무를 처리하는 코드는 별개입니다. 실제 업무에서는 처리 완료를 판단한 뒤 ACK해야 합니다."
+    ],
+    "questions": [
+      "첫 ACK 후 Unacked가 다시 1인 이유는 무엇인가요?",
+      "auto_ack=True로 바꾸면 Consumer 종료 시 어떤 보호가 달라질까요?"
+    ],
+    "sources": [
+      {
+        "title": "RabbitMQ Work Queues",
+        "url": "https://www.rabbitmq.com/tutorials/tutorial-two-python"
+      },
+      {
+        "title": "프로젝트 Consumer",
+        "url": "https://github.com/amirer21/message-flow-lab/blob/main/backend/app/consumer.py"
+      }
+    ],
+    "status": "actual",
+    "scope": "현재 프로젝트 구현의 핵심 코드를 발췌합니다. 파일의 주변 선언·imports·연결은 생략될 수 있으므로 전체 파일과 함께 읽으세요.",
+    "reviewed_at": "2026-10-06"
+  },
+  {
+    "id": 2,
+    "title": "프로세스 장애와 중복 업무의 원인",
+    "summary": "메시지가 Queue에 남는지뿐 아니라 업무가 몇 번 실행되는지 관찰합니다. DB 저장과 ACK는 서로 다른 시스템의 작업이므로 그 사이에 죽으면 같은 업무가 다시 실행될 수 있습니다.",
+    "flow": [
+      "메시지 수신 · attempt A",
+      "업무 기록 저장",
+      "ACK 전 강제 종료",
+      "재전달 · attempt B",
+      "같은 업무 다시 실행"
+    ],
+    "terms": [
+      {
+        "name": "Side effect · 업무 효과",
+        "meaning": "파일 기록·DB 변경처럼 실행 뒤에 남는 결과입니다. 현재 실습은 JSONL 파일에 효과를 기록합니다."
+      },
+      {
+        "name": "Redelivered",
+        "meaning": "Broker가 재전달한 전달의 표시입니다. 업무가 이미 실행됐는지는 이 값만으로 알 수 없습니다."
+      },
+      {
+        "name": "Process / IPC",
+        "meaning": "Consumer는 별도 자식 프로세스입니다. 부모 API와 stdin/stdout의 구조화된 메시지로 명령·결과를 주고받습니다."
+      },
+      {
+        "name": "fsync",
+        "meaning": "파일 기록을 운영체제에 flush한 뒤 저장 장치에 반영하도록 요청합니다. DB 트랜잭션이나 ACK와 원자적으로 묶는 기능은 아닙니다."
+      }
+    ],
+    "sections": [
+      {
+        "title": "장애 위치가 결과를 바꿉니다",
+        "paragraphs": [
+          "업무 반영 전에 종료하면 재전달 후 처음 업무를 처리할 수 있습니다. 업무 반영 후 ACK 전에 종료하면 효과는 이미 남았지만 Broker는 완료를 모릅니다. 재전달 시 업무를 반복하면 같은 Message ID의 효과가 두 개 남습니다.",
+          "ACK 호출 직후에는 Broker가 아직 반영 중일 수 있습니다. 실험 B는 Queue의 Ready·Unacked가 0으로 수집된 것을 확인한 뒤 종료합니다. 앱의 ACK_SENT 시각을 Broker 처리 시각으로 단정하지 않습니다."
+        ]
+      },
+      {
+        "title": "왜 별도 프로세스를 사용하나요?",
+        "paragraphs": [
+          "API 내부 상태를 가짜로 초기화하는 대신 실제 Linux Consumer 자식을 강제 종료합니다. Broker·API는 계속 실행되고 ACK하지 않은 연결이 닫히며 재전달을 관찰할 수 있습니다.",
+          "고정된 자식만 제어하므로 임의 PID·프로그램 실행을 노출하지 않습니다. stdin 명령은 process/ack/stop이며 부모의 crash가 자신이 생성한 자식을 kill합니다."
+        ]
+      },
+      {
+        "title": "왜 같은 시도의 중복 클릭만 막을까요?",
+        "paragraphs": [
+          "processed=True는 현재 전달에서 업무 버튼을 두 번 누르는 것을 막습니다. 그러나 자식이 죽고 새 attempt_id로 재전달되면 processed는 다시 False입니다. Message ID를 기준으로 영속 중복 판정을 하지 않기 때문입니다.",
+          "이 차이를 의도적으로 보여 주고 Phase 6에서 DB 고유 제약과 트랜잭션으로 해결합니다. 메시지가 다시 오는 것을 막는 것과 업무를 한 번만 반영하는 것은 다른 문제입니다."
+        ]
+      }
+    ],
+    "codes": [
+      {
+        "title": "실제 코드 · 영속 학습용 효과 기록",
+        "language": "python",
+        "code": "def append_effect(message_id, attempt_id):\n    record = {\"effect_id\": str(uuid4()), \"message_id\": message_id, \"attempt_id\": attempt_id,\n              \"timestamp\": datetime.now(timezone.utc).isoformat()}\n    path = Path(settings.effect_log)\n    path.parent.mkdir(parents=True, exist_ok=True)\n    with path.open(\"a\", encoding=\"utf-8\") as stream:\n        stream.write(json.dumps(record) + \"\\n\")\n        stream.flush()\n        os.fsync(stream.fileno())\n    return record",
+        "notes": [
+          "효과마다 effect_id를 만들고 message_id·attempt_id를 함께 저장합니다. 재전달의 두 효과를 나란히 비교할 수 있습니다.",
+          "append → flush → fsync로 완료된 기록을 남깁니다. 동일 message_id의 기록을 거절하는 고유 제약은 없습니다."
+        ],
+        "path": "backend/app/effects.py",
+        "kind": "actual",
+        "url": "https://github.com/amirer21/message-flow-lab/blob/main/backend/app/effects.py"
+      },
+      {
+        "title": "실제 코드 · 업무 반영과 ACK는 다른 명령",
+        "language": "python",
+        "code": "if kind == \"process\":\n    if pending[\"processed\"]:\n        raise ValueError(\"이 처리 시도는 이미 업무를 반영했습니다.\")\n    effect = append_effect(pending[\"message_id\"], pending[\"attempt_id\"])\n    # 업무 기록 후 ACK 전 종료하면 새 전달에서 업무가 반복될 수 있다.\n    pending[\"processed\"] = True\n    emit(\"event\", event_type=\"PROCESSED\", pending=pending, effect=effect)\nelse:\n    if not pending[\"processed\"]:\n        raise ValueError(\"업무 반영을 확인한 뒤 ACK를 보내세요.\")\n    channel.basic_ack(delivery_tag=tag)\n    emit(\"event\", event_type=\"ACK_SENT\", pending=pending)\n    pending = None\n    tag = None",
+        "notes": [
+          "process 명령은 append_effect 후 processed를 바꿉니다. 이 지점에서 종료하면 효과만 남고 ACK는 없습니다.",
+          "ack 명령은 processed를 확인한 뒤 basic_ack를 보냅니다. 두 명령 사이 장애가 중복의 핵심입니다."
+        ],
+        "path": "backend/app/phase2_worker.py",
+        "kind": "actual",
+        "url": "https://github.com/amirer21/message-flow-lab/blob/main/backend/app/phase2_worker.py"
+      }
+    ],
+    "experiments": [
+      {
+        "action": "업무 반영 후 ACK 전 강제 종료",
+        "expected": "같은 Message ID, 새 Attempt ID로 재전달",
+        "reason": "Broker는 아직 ACK를 반영하지 못했습니다."
+      },
+      {
+        "action": "재전달 후 업무를 다시 반영",
+        "expected": "업무 효과 2개",
+        "reason": "현재 실습은 메시지별 멱등 처리를 하지 않습니다."
+      },
+      {
+        "action": "ACK와 Queue 비움 확인 후 종료",
+        "expected": "새로 시작해도 해당 메시지 미수신",
+        "reason": "Broker의 해당 전달 완료 처리가 반영됐습니다."
+      }
+    ],
+    "pitfalls": [
+      "redelivered=False도 중복 업무가 절대 없다는 증거는 아닙니다. Producer 재발행 등 다른 원인이 있습니다.",
+      "업무 성공과 ACK를 하나의 atomic 작업처럼 설명하지 않습니다. 파일 기록에도 별도 장애 한계가 있습니다."
+    ],
+    "questions": [
+      "Message ID를 유지하면서 Attempt ID를 새로 만드는 이유는 무엇인가요?",
+      "업무 기록을 먼저 남겼는데 왜 Broker는 메시지를 다시 보내나요?"
+    ],
+    "sources": [
+      {
+        "title": "프로젝트 장애 Worker",
+        "url": "https://github.com/amirer21/message-flow-lab/blob/main/backend/app/phase2_worker.py"
+      },
+      {
+        "title": "RabbitMQ Reliability",
+        "url": "https://www.rabbitmq.com/docs/reliability"
+      }
+    ],
+    "status": "actual",
+    "scope": "현재 프로젝트 구현의 핵심 코드를 발췌합니다. 파일의 주변 선언·imports·연결은 생략될 수 있으므로 전체 파일과 함께 읽으세요.",
+    "reviewed_at": "2026-10-06"
+  },
+  {
+    "id": 3,
+    "title": "Exchange·Binding으로 전달 대상 결정",
+    "summary": "Queue가 메시지를 골라 가져오는 구조가 아니라 Producer의 발행 대상을 Exchange와 Binding으로 연결합니다. 같은 메시지가 여러 Queue에 복사되는 경우와 한 Queue에서 여러 Worker가 나누어 받는 경우를 구분합니다.",
+    "flow": [
+      "Producer + Routing Key",
+      "Exchange의 종류",
+      "Binding 규칙 비교",
+      "Queue A / B / C",
+      "Queue별 실제 수신"
+    ],
+    "terms": [
+      {
+        "name": "Binding",
+        "meaning": "Exchange와 Queue를 연결하는 규칙입니다. 연결할 때 Binding Key를 지정합니다."
+      },
+      {
+        "name": "Direct",
+        "meaning": "Routing Key가 Binding Key와 정확히 같은 Queue로 전달합니다. 같은 key로 연결된 여러 Queue에도 복사됩니다."
+      },
+      {
+        "name": "Fanout",
+        "meaning": "Routing Key를 기준으로 고르지 않고 연결된 모든 Queue에 복사합니다."
+      },
+      {
+        "name": "Topic",
+        "meaning": "점으로 나눈 단어를 비교합니다. *는 한 단어, #는 0개 이상입니다."
+      },
+      {
+        "name": "Exclusive Queue",
+        "meaning": "소유 연결에 종속된 임시 Queue입니다. 현재 Phase 3은 API 연결 종료 시 사라집니다."
+      }
+    ],
+    "sections": [
+      {
+        "title": "세 가지 종류를 코드로 읽기",
+        "paragraphs": [
+          "Direct에서 A/C의 Binding이 error이면 error 메시지는 A/C에 각각 생깁니다. Fanout에서는 A/B/C 모두 받습니다. Topic의 order.*는 order.created와 일치하지만 order.created.eu와는 일치하지 않습니다.",
+          "order.#는 order와 order.created.eu도 받을 수 있습니다. 이 판단은 Broker가 실행합니다. 브라우저의 topicMatches는 설명용 예상 계산이며 실제 수신 관측으로 기록하지 않습니다."
+        ]
+      },
+      {
+        "title": "복사와 경쟁 소비의 차이",
+        "paragraphs": [
+          "Fanout으로 세 Queue에 복사하면 각 Queue가 독립적으로 확인합니다. A가 ACK해도 B의 복사본은 남을 수 있습니다. 반면 한 Queue를 Worker 세 개가 소비하면 각 전달을 나누어 처리하는 경쟁 소비입니다.",
+          "Message ID가 같아도 Queue가 다르면 다른 복사본입니다. 이벤트에 Queue를 함께 기록해야 세 전달을 하나의 이벤트로 잘못 합치지 않습니다."
+        ]
+      },
+      {
+        "title": "Binding 변경과 실제 수신",
+        "paragraphs": [
+          "Binding은 앞으로 발행될 메시지의 길을 바꿉니다. 이미 Queue에 저장된 메시지를 새 Queue로 이동시키지 않습니다. 현재 UI의 수신 버튼은 basic_get으로 Queue별 최대 한 개를 꺼내고 ACK합니다.",
+          "최신 메시지보다 이전 메시지가 먼저 수신될 수 있으므로 Message ID를 대조합니다. 미수신만으로 발행 실패나 유실을 확정하지 않습니다. 새 실험은 이 단계의 임시 토폴로지를 삭제·재생성합니다."
+        ]
+      }
+    ],
+    "codes": [
+      {
+        "title": "실제 코드 · 임시 Exchange와 Binding 생성",
+        "language": "python",
+        "code": "self._kind = kind\nself._exchange = f\"phase3.{uuid4().hex}\"\nchannel.exchange_declare(exchange=self._exchange, exchange_type=kind, auto_delete=True)\nself._queues = []\nfor index, binding in enumerate(bindings):\n    label = \"abc\"[index]\n    name = f\"{self._exchange}.{label}\"\n    channel.queue_declare(queue=name, exclusive=True, auto_delete=True)\n    channel.queue_bind(queue=name, exchange=self._exchange, routing_key=binding)\n    self._queues.append({\"id\": label, \"name\": name, \"binding\": binding})\nself._records.clear()\nself._received = []\nself._last_publish = None\nself.record(\"TOPOLOGY_CREATED\", exchange_type=kind)",
+        "notes": [
+          "uuid가 실험 자원 이름을 구분합니다. exchange_type이 실제 Broker의 Routing 방식을 정합니다.",
+          "Queue별 queue_bind가 binding을 연결합니다. exclusive=True이므로 영속성 실험에 재사용하면 안 됩니다.",
+          "첫 부분은 기존 토폴로지를 지운 후의 생성 구간입니다. kind·bindings·channel은 같은 메서드의 인자입니다."
+        ],
+        "path": "backend/app/routing.py",
+        "kind": "actual",
+        "url": "https://github.com/amirer21/message-flow-lab/blob/main/backend/app/routing.py"
+      },
+      {
+        "title": "실제 코드 · Queue에서 실제 복사본 수신",
+        "language": "python",
+        "code": "elif command == \"receive\":\n    self._received = []\n    for queue in self._queues:\n        method, properties, body = channel.basic_get(queue=queue[\"name\"], auto_ack=False)\n        if method is None:\n            continue\n        envelope = json.loads(body)\n        item = {\"queue_id\": queue[\"id\"], \"message_id\": properties.message_id,\n                \"body\": envelope[\"body\"], \"routing_key\": method.routing_key,\n                \"prediction\": envelope.get(\"prediction\", []), \"redelivered\": method.redelivered}\n        self.record(\"DELIVERED\", **item)\n        channel.basic_ack(delivery_tag=method.delivery_tag)\n        self.record(\"ACK_SENT\", properties.message_id, queue_id=queue[\"id\"])\n        self._received.append(item)",
+        "notes": [
+          "basic_get은 지표 조회가 아니라 소비입니다. 메시지가 없으면 method=None입니다.",
+          "body·message_id·routing_key·queue_id를 실제 응답에서 읽고 같은 channel로 ACK합니다. 사용자의 prediction은 정답을 결정하지 않습니다."
+        ],
+        "path": "backend/app/routing.py",
+        "kind": "actual",
+        "url": "https://github.com/amirer21/message-flow-lab/blob/main/backend/app/routing.py"
+      }
+    ],
+    "experiments": [
+      {
+        "action": "Direct에 error 발행",
+        "expected": "A/C 수신",
+        "reason": "같은 Binding Key로 연결한 두 Queue가 일치합니다."
+      },
+      {
+        "action": "Topic에 order.created.eu 발행",
+        "expected": "기본 # Queue C만 수신",
+        "reason": "order.*는 한 단어만 추가로 허용합니다."
+      },
+      {
+        "action": "메시지 발행 후 Binding 변경",
+        "expected": "기존 복사본은 원래 Queue에 남음",
+        "reason": "Routing은 발행 시점에 적용됩니다."
+      }
+    ],
+    "pitfalls": [
+      "Binding이 없는 메시지의 미수신을 Consumer 처리 완료로 해석하지 않습니다.",
+      "현재 임시 Queue는 API 연결 종료 시 삭제됩니다. Broker 영속성과 별개의 실험입니다."
+    ],
+    "questions": [
+      "Fanout 3개 Queue와 한 Queue의 3개 Worker는 어떻게 다를까요?",
+      "order.#와 order.*가 order에 대해 다른 결과를 내는 이유는 무엇인가요?"
+    ],
+    "sources": [
+      {
+        "title": "프로젝트 Routing 코드",
+        "url": "https://github.com/amirer21/message-flow-lab/blob/main/backend/app/routing.py"
+      },
+      {
+        "title": "RabbitMQ Topic 튜토리얼",
+        "url": "https://www.rabbitmq.com/tutorials/tutorial-five-python"
+      }
+    ],
+    "status": "actual",
+    "scope": "현재 프로젝트 구현의 핵심 코드를 발췌합니다. 파일의 주변 선언·imports·연결은 생략될 수 있으므로 전체 파일과 함께 읽으세요.",
+    "reviewed_at": "2026-10-06"
+  },
+  {
+    "id": 4,
+    "title": "발행 확인·반환·영속성의 세 경계",
+    "summary": "발행 함수의 반환, Broker 확인, Queue에 전달됨, Consumer 업무 완료를 서로 구분합니다. 신뢰성은 성공 표시 하나를 추가하는 문제가 아니라 어디까지 확인했는지 기록하는 설계입니다.",
+    "flow": [
+      "Producer 발행",
+      "Broker Confirm / NACK",
+      "mandatory Return 여부",
+      "durable Queue + persistent",
+      "Consumer 업무 / ACK"
+    ],
+    "terms": [
+      {
+        "name": "Confirm",
+        "meaning": "Broker가 발행자에게 보내는 확인입니다. Consumer가 보내는 ACK와 별개입니다."
+      },
+      {
+        "name": "mandatory / Return",
+        "meaning": "라우팅할 Queue가 없을 때 발행자에게 반환하도록 요청하는 옵션과 반환 응답입니다."
+      },
+      {
+        "name": "Durable / Persistent",
+        "meaning": "Durable은 Queue의 수명 설정, persistent는 메시지 저장 의도입니다. 서로 다른 설정입니다."
+      },
+      {
+        "name": "Unknown outcome",
+        "meaning": "연결 단절로 결과를 확인하지 못한 상태입니다. 미확인은 발행 실패와 동일하지 않습니다."
+      }
+    ],
+    "sections": [
+      {
+        "title": "신뢰성 요구를 질문으로 나누기",
+        "paragraphs": [
+          "Confirm은 발행 측 확인이며 업무 결과를 보장하지 않습니다. mandatory는 unroutable을 감지하기 위한 별도 설정입니다. Broker가 unroutable 메시지를 처리했다는 확인과 해당 메시지의 Return을 함께 받을 수 있습니다.",
+          "따라서 UI는 confirmed, returned, 처리 결과를 각각 표시해야 합니다. Return이 있었다면 연결된 Queue에 전달됐다는 의미로 성공을 표시하면 안 됩니다."
+        ]
+      },
+      {
+        "title": "Pika BlockingConnection에서 결과 분류",
+        "paragraphs": [
+          "confirm_delivery를 켜면 basic_publish가 확인을 기다리는 방식으로 동작합니다. mandatory 발행의 라우팅 실패는 UnroutableError, Broker NACK는 NackError로 처리할 수 있습니다. 설치 버전의 예외·연결 동작을 확인합니다.",
+          "연결 오류·timeout은 경우에 따라 발행 전 실패인지 발행 후 확인 유실인지 구분하기 어렵습니다. 아래 교육 예시는 보수적으로 UNKNOWN으로 분류합니다. 자동으로 다시 보내면 중복 발행될 수 있어 업무 키와 이력이 필요합니다."
+        ]
+      },
+      {
+        "title": "재시작 실험에서 무엇을 증명할까요?",
+        "paragraphs": [
+          "durable Queue와 delivery_mode=2 메시지를 전용 Broker에 남긴 뒤 정상 재시작하고 내용을 확인합니다. 임시 Queue와 다른 이름을 사용해 속성 충돌을 피합니다. 동일 이름 Queue를 다른 durable 설정으로 선언하면 채널 오류가 날 수 있습니다.",
+          "정상 재시작 통과는 전원 손실·디스크 손실·다중 노드 장애까지 보장하는 결과가 아닙니다. 테스트가 확인한 장애 범위를 기록하고 사용자 진행 중인 실험 Broker는 임의 중단하지 않습니다."
+        ]
+      }
+    ],
+    "codes": [
+      {
+        "title": "설계 예시 · 발행 결과를 분리해서 반환",
+        "language": "python",
+        "code": "import pika\n\ndef publish_checked(ch, exchange, key, body):\n    ch.confirm_delivery()\n    try:\n        ch.basic_publish(\n            exchange=exchange, routing_key=key, body=body,\n            mandatory=True,\n            properties=pika.BasicProperties(delivery_mode=2),\n        )\n    except pika.exceptions.UnroutableError:\n        return {\"outcome\": \"RETURNED\", \"routed\": False}\n    except pika.exceptions.NackError:\n        return {\"outcome\": \"NACKED\"}\n    except pika.exceptions.AMQPError:\n        return {\"outcome\": \"UNKNOWN\", \"retry_automatically\": False}\n    return {\"outcome\": \"CONFIRMED\", \"consumer_done\": False}",
+        "notes": [
+          "ch는 같은 스레드에서 소유하는 연결된 channel이며 Exchange·Queue·Binding은 사전에 선언해야 합니다.",
+          "CONFIRMED의 consumer_done=False는 결과를 섞지 않기 위한 표시입니다. 실제 업무 결과는 별도 기록으로 확인합니다.",
+          "이 코드는 핵심 분류 예시입니다. API timeout, 오류 이전 성공 여부, message_id·관측 이벤트와 shutdown 처리는 실제 구현에서 더해져야 합니다."
+        ],
+        "path": null,
+        "kind": "design"
+      }
+    ],
+    "experiments": [
+      {
+        "action": "정상 Binding으로 mandatory 발행",
+        "expected": "Confirm과 Queue 수신 각각 확인",
+        "reason": "발행 측 확인과 전달 대상은 다른 사실입니다."
+      },
+      {
+        "action": "Binding 없는 key로 mandatory 발행",
+        "expected": "Return 관측",
+        "reason": "Consumer가 꺼진 상태와 라우팅 실패를 구분합니다."
+      },
+      {
+        "action": "전용 Broker의 정상 재시작",
+        "expected": "선언된 durable/persistent 데이터 비교",
+        "reason": "확인한 재시작 범위를 기록합니다."
+      }
+    ],
+    "pitfalls": [
+      "Timeout 뒤 무조건 새 Message ID로 재발행하면 중복 업무를 만들 수 있습니다.",
+      "실제 Broker의 확인을 받지 않고 기본값 confirmed=True를 표시하면 안 됩니다."
+    ],
+    "questions": [
+      "Confirm을 받아도 업무가 끝나지 않은 이유는 무엇인가요?",
+      "발행 후 확인 응답만 유실되면 재시도를 어떻게 결정해야 할까요?"
+    ],
+    "sources": [
+      {
+        "title": "RabbitMQ Confirm / ACK",
+        "url": "https://www.rabbitmq.com/docs/confirms"
+      },
+      {
+        "title": "Pika 발행 확인 API",
+        "url": "https://pika.readthedocs.io/en/stable/examples/blocking_delivery_confirmations.html"
+      }
+    ],
+    "status": "design",
+    "scope": "학습용 설계 예시입니다. 실제 실습 코드와 별도로 읽으며, 실행하려면 연결·의존성·토폴로지·Worker 구성과 장애 처리를 준비해야 합니다. 예제의 예상 결과는 실제 검증 완료 기록이 아닙니다.",
+    "reviewed_at": "2026-10-06"
+  },
+  {
+    "id": 5,
+    "title": "제한된 Retry와 DLQ의 역할",
+    "summary": "실패를 모두 재시도하면 한 메시지가 계속 자원을 차지할 수 있습니다. 다시 실행하면 해결될 실패와 입력 자체가 잘못된 실패를 분류하고, 시도 횟수와 대기를 제한합니다.",
+    "flow": [
+      "작업 Queue",
+      "일시 실패",
+      "Confirm된 Retry 발행",
+      "TTL 대기 → 작업 Queue",
+      "한도 초과 → DLQ"
+    ],
+    "terms": [
+      {
+        "name": "NACK / reject",
+        "meaning": "Consumer가 전달을 완료하지 못했다고 알리는 동작입니다. requeue 옵션에 따라 되돌리거나 DLX로 이동할 수 있습니다."
+      },
+      {
+        "name": "Retry / Requeue",
+        "meaning": "Retry는 새 시도·횟수·대기 정책, requeue는 전달을 Queue로 돌리는 Broker 동작입니다."
+      },
+      {
+        "name": "TTL / DLX / DLQ",
+        "meaning": "TTL은 대기 데이터의 만료 설정, DLX는 만료·거절된 메시지를 분배하는 Exchange, DLQ는 최종 격리 Queue입니다."
+      },
+      {
+        "name": "retry_count / x-death",
+        "meaning": "앱의 시도 헤더와 Broker의 dead-letter 이력입니다. 같은 의미로 무작정 합산하지 않습니다."
+      }
+    ],
+    "sections": [
+      {
+        "title": "실패를 분류하는 기준",
+        "paragraphs": [
+          "네트워크 일시 오류는 잠시 뒤 다시 시도할 수 있습니다. 필수 필드 누락은 같은 입력을 반복해도 해결되지 않으므로 바로 격리할 수 있습니다. 최대 추가 재시도 3회라면 최초 실행을 포함해 최대 4회라는 기준도 명시합니다.",
+          "backoff는 시간이 지나며 대기를 늘리는 정책입니다. 무제한 immediate requeue는 poison message가 실패를 빠르게 반복하는 상황을 만들 수 있습니다. DLQ는 문제를 자동 해결하지 않고 조사 가능한 곳에 격리합니다."
+        ]
+      },
+      {
+        "title": "TTL + Dead Letter 경로",
+        "paragraphs": [
+          "예시 토폴로지는 work Exchange/Queue, retry Exchange/Queue, dead Exchange/Queue로 나눕니다. retry Queue에 5초 TTL과 작업 Exchange로 돌아오는 DLX를 지정합니다. TTL이 지나면 재시도할 메시지를 작업 Queue로 다시 전달합니다.",
+          "TTL은 정확한 예약 실행 시각을 보장하는 스케줄러가 아닙니다. 메시지 크기·적체·Queue 종류·Broker 상태에 따라 관측 시간이 달라집니다. production에서는 변경 가능한 Broker policy와 DLX 전달 안전성도 검토합니다."
+        ]
+      },
+      {
+        "title": "재발행과 원본 ACK 사이의 순서",
+        "paragraphs": [
+          "앱이 retry_count를 늘려 새 메시지를 발행한다면 발행 확인 후 원본 ACK를 보냅니다. 새 발행이 실패했는데 원본을 ACK하면 두 위치 모두에서 사라질 수 있습니다.",
+          "반대로 새 발행 확인 뒤 원본 ACK 전 종료하면 원본이 재전달되며 Retry 복사본도 남을 수 있습니다. 멱등성 없이는 중복 업무가 생길 수 있으므로 Phase 6과 연결합니다."
+        ]
+      }
+    ],
+    "codes": [
+      {
+        "title": "설계 예시 · Retry Queue의 TTL/DLX 토폴로지",
+        "language": "python",
+        "code": "# ch는 연결된 Pika channel\nch.exchange_declare(exchange=\"phase5.work\", exchange_type=\"direct\", durable=True)\nch.exchange_declare(exchange=\"phase5.retry\", exchange_type=\"direct\", durable=True)\nch.exchange_declare(exchange=\"phase5.dead\", exchange_type=\"direct\", durable=True)\nch.queue_declare(queue=\"phase5.work.q\", durable=True)\nch.queue_bind(queue=\"phase5.work.q\", exchange=\"phase5.work\", routing_key=\"job\")\nch.queue_declare(queue=\"phase5.retry.q\", durable=True, arguments={\n    \"x-message-ttl\": 5000,\n    \"x-dead-letter-exchange\": \"phase5.work\",\n    \"x-dead-letter-routing-key\": \"job\",\n})\nch.queue_bind(queue=\"phase5.retry.q\", exchange=\"phase5.retry\", routing_key=\"job\")\nch.queue_declare(queue=\"phase5.dead.q\", durable=True)\nch.queue_bind(queue=\"phase5.dead.q\", exchange=\"phase5.dead\", routing_key=\"job\")",
+        "notes": [
+          "이 선언은 메시지의 길만 만듭니다. 실패 분류·Retry 재발행·원본 ACK 코드는 별도로 구현합니다.",
+          "추가 시도 횟수는 앱 헤더로 관리하고 한도 초과 시 phase5.dead로 발행합니다. 선언만으로 제한이 생기지는 않습니다.",
+          "교육용 고정 arguments 예시입니다. 기존 Queue의 arguments 변경은 속성 충돌이 생길 수 있어 새 자원 또는 migration/policy가 필요합니다."
+        ],
+        "path": null,
+        "kind": "design"
+      }
+    ],
+    "experiments": [
+      {
+        "action": "일시 실패 2회 후 성공",
+        "expected": "시도 3회, 성공 효과 1회",
+        "reason": "최초 실행과 재시도 횟수를 구분합니다."
+      },
+      {
+        "action": "입력 영구 오류",
+        "expected": "즉시 최종 DLQ",
+        "reason": "같은 입력 반복은 해결되지 않습니다."
+      },
+      {
+        "action": "재발행 확인 후 원본 ACK 전 종료",
+        "expected": "중복 후보 관측",
+        "reason": "두 메시지 작업 사이에 원자성이 없습니다."
+      }
+    ],
+    "pitfalls": [
+      "DLQ를 화면에서 보려고 basic_get하면 실제로 소비합니다. 일반 목록은 저장한 이력으로 조회합니다.",
+      "DLX를 사용한다고 모든 Queue에서 장애 중 이동 유실 가능성이 없어지는 것은 아닙니다. Queue 종류와 정책을 확인합니다."
+    ],
+    "questions": [
+      "max_retries=3을 총 3회 실행과 구분해서 설명할 수 있나요?",
+      "Retry 메시지 발행을 확인하기 전에 원본을 ACK하면 어떤 위험이 있나요?"
+    ],
+    "sources": [
+      {
+        "title": "RabbitMQ DLX",
+        "url": "https://www.rabbitmq.com/docs/dlx"
+      },
+      {
+        "title": "RabbitMQ TTL",
+        "url": "https://www.rabbitmq.com/docs/ttl"
+      }
+    ],
+    "status": "design",
+    "scope": "학습용 설계 예시입니다. 실제 실습 코드와 별도로 읽으며, 실행하려면 연결·의존성·토폴로지·Worker 구성과 장애 처리를 준비해야 합니다. 예제의 예상 결과는 실제 검증 완료 기록이 아닙니다.",
+    "reviewed_at": "2026-10-06"
+  },
+  {
+    "id": 6,
+    "title": "DB 트랜잭션으로 업무 효과를 한 번만",
+    "summary": "같은 메시지가 다시 와도 업무 결과를 한 번만 반영하는 것이 멱등성입니다. 메시지의 중복 수신을 없애려 하기보다, DB가 업무 중복을 판정하고 변경을 한 묶음으로 commit하도록 설계합니다.",
+    "flow": [
+      "idempotency_key 읽기",
+      "고유 키 INSERT",
+      "같은 트랜잭션의 업무 변경",
+      "DB commit",
+      "그 뒤 Consumer ACK"
+    ],
+    "terms": [
+      {
+        "name": "Idempotency key",
+        "meaning": "논리 업무를 식별하는 안정된 키입니다. 전송 UUID와 같아야 하는 것은 아닙니다. 같은 주문 처리에는 같은 업무 키를 사용합니다."
+      },
+      {
+        "name": "Unique constraint",
+        "meaning": "DB가 동시 실행에서도 같은 키를 둘 이상 저장하지 못하게 하는 제약입니다."
+      },
+      {
+        "name": "Transaction",
+        "meaning": "여러 DB 변경을 모두 commit하거나 모두 rollback하는 경계입니다."
+      },
+      {
+        "name": "Consumer scope",
+        "meaning": "같은 이벤트를 서로 다른 목적의 Consumer가 처리할 수 있도록 중복 판정 범위를 분리하는 값입니다."
+      }
+    ],
+    "sections": [
+      {
+        "title": "메모리 set이나 SELECT로 충분하지 않은 이유",
+        "paragraphs": [
+          "처리한 키를 메모리 set에 넣으면 프로세스 재시작 시 잊습니다. SELECT로 먼저 조회한 뒤 업무를 처리하면 Worker A/B가 동시에 “없다”고 보고 둘 다 처리할 수 있습니다.",
+          "PostgreSQL 고유 제약과 INSERT ... ON CONFLICT DO NOTHING ... RETURNING으로 한 실행만 처리 권한을 얻습니다. 키 기록과 업무 변경은 같은 트랜잭션에 있어야 합니다."
+        ]
+      },
+      {
+        "title": "DB commit과 ACK의 순서",
+        "paragraphs": [
+          "업무가 rollback되면 처리 키도 rollback해야 다음 시도가 업무를 다시 수행할 수 있습니다. commit 전에 ACK하면 DB 오류 시 메시지만 완료 처리될 수 있습니다.",
+          "commit 후 ACK 전에 죽으면 재전달됩니다. 이번에는 처리 키가 이미 있으므로 업무를 반복하지 않고 ACK할 수 있습니다. 이 방식은 같은 DB 안의 업무 효과를 보호하며 외부 이메일·결제를 자동으로 원자 처리하지는 않습니다."
+        ]
+      },
+      {
+        "title": "데이터 모델과 관측",
+        "paragraphs": [
+          "processed_commands에는 consumer_scope와 idempotency_key의 복합 고유 키를 둡니다. business_effects에는 실제 학습용 업무 결과를 저장합니다. 이력에는 run_id·message_id·attempt_id를 함께 남겨 재전달과 업무 중복 방어를 구분합니다.",
+          "아래 예시는 Psycopg 3 connection·channel을 이미 준비했다고 가정합니다. transaction context를 벗어나야 commit이 완료되므로 ACK는 with 블록 바깥입니다."
+        ]
+      }
+    ],
+    "codes": [
+      {
+        "title": "설계 예시 · 고유 제약과 같은 트랜잭션의 업무 기록",
+        "language": "sql",
+        "code": "CREATE TABLE processed_commands (\n    consumer_scope TEXT NOT NULL,\n    idempotency_key TEXT NOT NULL,\n    PRIMARY KEY (consumer_scope, idempotency_key)\n);\nCREATE TABLE business_effects (\n    consumer_scope TEXT NOT NULL,\n    idempotency_key TEXT NOT NULL,\n    amount INTEGER NOT NULL\n);",
+        "notes": [
+          "먼저 migration으로 테이블을 만듭니다. 업무와 처리 키가 별도 DB에 있으면 이 단일 트랜잭션 예시를 그대로 적용할 수 없습니다."
+        ],
+        "path": null,
+        "kind": "design"
+      },
+      {
+        "title": "설계 예시 · commit 이후 ACK",
+        "language": "python",
+        "code": "def handle_job(conn, ch, delivery_tag, key, amount):\n    with conn.transaction():\n        row = conn.execute(\n            \"INSERT INTO processed_commands VALUES (%s, %s) \"\n            \"ON CONFLICT DO NOTHING RETURNING idempotency_key\",\n            (\"billing-demo\", key),\n        ).fetchone()\n        if row is not None:\n            conn.execute(\n                \"INSERT INTO business_effects VALUES (%s, %s, %s)\",\n                (\"billing-demo\", key, amount),\n            )\n    ch.basic_ack(delivery_tag=delivery_tag)",
+        "notes": [
+          "row가 있는 실행만 처음 처리한 권한을 얻어 업무를 반영합니다. 충돌한 실행은 기존 업무가 commit된 후 중복으로 판정됩니다.",
+          "두 INSERT는 같은 transaction입니다. 업무 INSERT가 예외이면 키 INSERT도 rollback하고 ACK하지 않습니다.",
+          "conn은 유효한 Psycopg 3 connection으로 외부 transaction이 없는 상태를 가정합니다. 실제 Worker의 retry·연결 복구·오류 분류는 별도입니다."
+        ],
+        "path": null,
+        "kind": "design"
+      }
+    ],
+    "experiments": [
+      {
+        "action": "같은 업무 키를 두 Worker가 동시에 처리",
+        "expected": "업무 효과 1개",
+        "reason": "DB 고유 제약이 경쟁을 판정합니다."
+      },
+      {
+        "action": "업무 INSERT 직전에 오류",
+        "expected": "키·업무 모두 rollback",
+        "reason": "재전달이 정상 작업을 이어갈 수 있습니다."
+      },
+      {
+        "action": "commit 후 ACK 전 종료",
+        "expected": "재전달되지만 효과는 1개",
+        "reason": "영속 처리 키가 중복을 방어합니다."
+      }
+    ],
+    "pitfalls": [
+      "먼저 processed를 commit하고 나중에 업무를 변경하면 장애 시 영원히 미처리 상태가 될 수 있습니다.",
+      "Message ID를 매 발행 새로 생성하면 같은 업무 재요청 판정에는 안정된 별도 업무 키가 필요합니다."
+    ],
+    "questions": [
+      "SELECT 후 INSERT와 고유 제약 경쟁 처리는 어떻게 다른가요?",
+      "이 설계가 외부 이메일 전송까지 한 번만 보장하지 못하는 이유는 무엇인가요?"
+    ],
+    "sources": [
+      {
+        "title": "PostgreSQL ON CONFLICT",
+        "url": "https://www.postgresql.org/docs/current/sql-insert.html"
+      },
+      {
+        "title": "PostgreSQL 트랜잭션 격리",
+        "url": "https://www.postgresql.org/docs/current/transaction-iso.html"
+      }
+    ],
+    "status": "design",
+    "scope": "학습용 설계 예시입니다. 실제 실습 코드와 별도로 읽으며, 실행하려면 연결·의존성·토폴로지·Worker 구성과 장애 처리를 준비해야 합니다. 예제의 예상 결과는 실제 검증 완료 기록이 아닙니다.",
+    "reviewed_at": "2026-10-06"
+  },
+  {
+    "id": 7,
+    "title": "Worker·Prefetch·처리량을 실측하기",
+    "summary": "Worker 수와 메시지 예약량은 다른 설정입니다. 같은 작업 부하에서 하나씩 변경해 처리량, 대기 시간, Worker별 분배를 함께 비교합니다. “더 많이”가 항상 “더 빠르게”를 뜻하지 않습니다.",
+    "flow": [
+      "동일 부하 발행",
+      "Worker 1개 / 3개",
+      "Prefetch 1 / 10 / 100",
+      "처리 완료 시각 기록",
+      "throughput + p50/p95 비교"
+    ],
+    "terms": [
+      {
+        "name": "Concurrency",
+        "meaning": "동시에 실행하는 업무 수입니다. Prefetch와 동일하지 않습니다."
+      },
+      {
+        "name": "Throughput",
+        "meaning": "측정 구간에서 완료한 작업 수를 경과 시간으로 나눈 처리량입니다."
+      },
+      {
+        "name": "Latency",
+        "meaning": "발행부터 시작·완료까지 걸린 시간입니다. 어떤 구간을 재는지 정해야 합니다."
+      },
+      {
+        "name": "p50 / p95",
+        "meaning": "측정 분포의 중간과 느린 쪽 지점을 나타냅니다. 평균에 가려진 긴 대기를 볼 수 있습니다."
+      }
+    ],
+    "sections": [
+      {
+        "title": "Prefetch가 제한하는 것",
+        "paragraphs": [
+          "일반적인 basic_consume + manual ACK에서 Prefetch는 ACK하지 않은 전달량을 제한합니다. 한 Worker가 순차 처리해도 Prefetch 10이면 실행 전 메시지가 미리 예약될 수 있습니다. 그래서 Unacked 10은 업무 10개 동시 실행이 아닙니다.",
+          "큰 Prefetch가 왕복 대기를 줄일 때도 있지만 느린 Worker에 메시지가 예약돼 분배가 나빠질 수도 있습니다. RabbitMQ의 Consumer QoS와 channel global 옵션, Celery의 별도 multiplier를 구분합니다."
+        ]
+      },
+      {
+        "title": "공정한 비교 설계",
+        "paragraphs": [
+          "예를 들어 30개 메시지에 짧은 작업 200ms와 긴 작업 2초를 섞고 입력 순서를 고정합니다. Worker 수, 작업 수, 동시성, Prefetch 중 한 항목만 바꾸며 같은 장비·Queue 종류를 유지합니다.",
+          "측정 전에 이전 run의 Ready·Unacked를 정리 확인하고 run_id를 새로 만듭니다. 최소 3회 반복해 측정 변동도 기록합니다. Worker 3개가 정확히 세 배 빠르다는 정답을 미리 정하지 않습니다."
+        ]
+      },
+      {
+        "title": "시간 측정의 경계",
+        "paragraphs": [
+          "아래 함수는 완료 시간 목록을 통계로 요약하는 순수 예시입니다. 실제 시각 수집·Worker 운영 코드는 포함하지 않습니다. 단일 시계에서 경과 시간은 monotonic 계열로 측정하고 이벤트 표시에는 UTC 시각을 사용합니다.",
+          "호스트가 다르면 UTC 차감에 시계 차이가 섞일 수 있습니다. 발행과 완료가 어느 프로세스에서 기록됐는지 함께 저장해야 수치를 해석할 수 있습니다."
+        ]
+      }
+    ],
+    "codes": [
+      {
+        "title": "설계 예시 · 같은 수집 기준으로 통계 계산",
+        "language": "python",
+        "code": "import math\n\ndef summarize(completion_latencies, elapsed_seconds):\n    if not completion_latencies or elapsed_seconds <= 0:\n        raise ValueError(\"실제로 완료된 표본과 양의 측정 시간이 필요합니다\")\n    ordered = sorted(completion_latencies)\n    def percentile(p):\n        return ordered[max(0, math.ceil(len(ordered) * p) - 1)]\n    return {\n        \"completed\": len(ordered),\n        \"throughput_per_sec\": len(ordered) / elapsed_seconds,\n        \"p50_sec\": percentile(0.50),\n        \"p95_sec\": percentile(0.95),\n    }",
+        "notes": [
+          "percentile은 nearest-rank 계산입니다. 표본 수가 작으면 p95가 최댓값과 가까워질 수 있어 표본 수도 함께 표시합니다.",
+          "누락·실패 메시지를 완료 표본에 넣어 좋은 수치를 만들지 않습니다. 성공·실패·미완료 수를 별도로 대조합니다."
+        ],
+        "path": null,
+        "kind": "design"
+      }
+    ],
+    "experiments": [
+      {
+        "action": "Worker 1 → 3, 나머지 동일",
+        "expected": "처리량·분배·대기 비교",
+        "reason": "장비 자원이나 DB 경합 때문에 선형 증가하지 않을 수 있습니다."
+      },
+      {
+        "action": "Prefetch 1 → 100",
+        "expected": "Unacked와 Worker별 작업 수 비교",
+        "reason": "미리 예약한 양과 동시 실행 수를 구분합니다."
+      },
+      {
+        "action": "긴 작업 혼합",
+        "expected": "p95와 평균의 차이 관찰",
+        "reason": "늦은 작업의 영향을 평균만으로 숨기지 않습니다."
+      }
+    ],
+    "pitfalls": [
+      "발행 개수를 throughput의 완료 개수 대신 쓰면 실패·누락을 숨깁니다.",
+      "CPU 작업과 대기 작업은 병목이 다릅니다. sleep 실험 결과를 CPU 계산 성능으로 일반화하지 않습니다."
+    ],
+    "questions": [
+      "Unacked가 100인데 Worker 동시성은 1일 수 있나요?",
+      "Worker와 Prefetch를 동시에 바꾸면 왜 원인을 판단하기 어렵나요?"
+    ],
+    "sources": [
+      {
+        "title": "RabbitMQ Consumer Prefetch",
+        "url": "https://www.rabbitmq.com/docs/consumer-prefetch"
+      }
+    ],
+    "status": "design",
+    "scope": "학습용 설계 예시입니다. 실제 실습 코드와 별도로 읽으며, 실행하려면 연결·의존성·토폴로지·Worker 구성과 장애 처리를 준비해야 합니다. 예제의 예상 결과는 실제 검증 완료 기록이 아닙니다.",
+    "reviewed_at": "2026-10-06"
+  },
+  {
+    "id": 8,
+    "title": "Kombu의 추상화와 남는 책임",
+    "summary": "Pika로 배운 Broker 개념을 Kombu의 Connection·Exchange·Queue·Producer·Consumer 객체로 다시 표현합니다. 코드가 줄어들어도 ACK, 재전달, 멱등 업무 설계의 책임은 남습니다.",
+    "flow": [
+      "Connection",
+      "Exchange + Queue 객체",
+      "Producer.publish",
+      "Consumer callback",
+      "message.ack"
+    ],
+    "terms": [
+      {
+        "name": "Connection / Transport",
+        "meaning": "서버 연결과 메시징 구현을 추상화합니다. transport마다 지원 보장이 같다고 가정하지 않습니다."
+      },
+      {
+        "name": "Entity 선언",
+        "meaning": "Exchange·Queue 객체로 이름·종류·Binding·durable 속성을 기술합니다."
+      },
+      {
+        "name": "Serializer / accept",
+        "meaning": "발행 데이터 직렬화와 소비 허용 형식입니다. JSON만 허용하는 방향으로 제한합니다."
+      },
+      {
+        "name": "message.ack()",
+        "meaning": "Kombu 메시지 객체의 확인 동작입니다. 업무 완료를 판단하는 코드는 여전히 직접 필요합니다."
+      }
+    ],
+    "sections": [
+      {
+        "title": "Pika 코드와 대응시키기",
+        "paragraphs": [
+          "Pika의 queue_declare/queue_bind가 Kombu Queue 객체 선언으로, basic_publish가 Producer.publish로, basic_ack가 message.ack로 대응합니다. 연결·메시지·토폴로지 객체를 조합해 코드의 반복을 줄입니다.",
+          "아래는 RabbitMQ AMQP transport의 학습용 send-once/consume-once 예시입니다. BROKER_URL은 컨테이너 환경변수에서 읽고 코드에 실제 비밀번호를 넣지 않습니다."
+        ]
+      },
+      {
+        "title": "선언과 소비의 생명주기",
+        "paragraphs": [
+          "Producer의 declare=[queue]가 토폴로지를 준비한 뒤 발행합니다. Consumer는 callbacks를 등록하고 drain_events로 전달 이벤트를 처리합니다. callback 안의 message.ack가 전달을 확인합니다.",
+          "context manager는 연결·소비 자원의 수명을 정리합니다. 본문을 print한 예시가 실제 DB 업무를 완료했다고 뜻하지는 않습니다. 예외·연결 복구·timeout은 실제 Worker에서 추가해야 합니다."
+        ]
+      },
+      {
+        "title": "공정한 라이브러리 비교",
+        "paragraphs": [
+          "같은 Queue 속성, payload, ACK 정책과 장애 위치로 Pika와 Kombu를 비교해야 라이브러리 차이를 볼 수 있습니다. 단순 정상 발행만 비교하면 신뢰성 동작이 빠집니다.",
+          "publish retry 옵션을 켜면 연결 실패 시 재발행 가능성과 중복을 이해해야 합니다. Confirm 설정과 mandatory 처리는 사용 transport·버전 문서를 확인하고 실제 Broker로 검증합니다."
+        ]
+      }
+    ],
+    "codes": [
+      {
+        "title": "설계 예시 · Kombu로 한 번 발행하고 소비",
+        "language": "python",
+        "code": "import os\nfrom kombu import Connection, Exchange, Queue, Producer, Consumer\n\nexchange = Exchange(\"phase8.jobs\", type=\"direct\", durable=True)\nqueue = Queue(\"phase8.jobs.q\", exchange=exchange, routing_key=\"job\", durable=True)\n\ndef received(body, message):\n    print(\"수신 본문:\", body)\n    message.ack()\n\nwith Connection(os.environ[\"BROKER_URL\"]) as conn:\n    Producer(conn).publish(\n        {\"body\": \"hello\"}, exchange=exchange, routing_key=\"job\",\n        serializer=\"json\", declare=[queue], delivery_mode=2,\n    )\n    with Consumer(conn, queues=[queue], callbacks=[received],\n                  accept=[\"json\"], prefetch_count=1):\n        conn.drain_events(timeout=10)",
+        "notes": [
+          "이 예시는 Kombu 설치·BROKER_URL·실행 가능한 RabbitMQ가 필요합니다. 현재 실습 이미지에는 Kombu가 추가돼 있지 않습니다.",
+          "drain_events는 한 이벤트를 기다립니다. 계속 실행하는 Worker에는 종료 신호·timeout 처리·반복 루프가 필요합니다.",
+          "발행 코드에 Confirm 보장을 추가했다고 간주하지 않습니다. 목적은 객체와 Pika 동작의 대응을 읽는 것입니다."
+        ],
+        "path": null,
+        "kind": "design"
+      }
+    ],
+    "experiments": [
+      {
+        "action": "Pika와 같은 데이터 발행·수동 ACK",
+        "expected": "내용과 Queue 결과 비교",
+        "reason": "사용 API는 달라도 Broker 개념은 이어집니다."
+      },
+      {
+        "action": "ACK 전에 Consumer 종료",
+        "expected": "재전달 확인",
+        "reason": "추상화가 재전달 책임을 제거하지 않습니다."
+      },
+      {
+        "action": "JSON 외 입력",
+        "expected": "허용 포맷 제한 확인",
+        "reason": "임의 객체 역직렬화를 열지 않습니다."
+      }
+    ],
+    "pitfalls": [
+      "Kombu API를 Celery Task API와 같은 것으로 부르지 않습니다. Celery는 Kombu 위에 Task 기능을 더합니다.",
+      "transport를 바꿔도 RabbitMQ의 Confirm·Routing 동작이 그대로라고 가정하지 않습니다."
+    ],
+    "questions": [
+      "Kombu Queue 객체가 Pika의 어떤 명령들을 감싸나요?",
+      "message.ack()를 언제 호출해야 하는 책임은 누가 갖나요?"
+    ],
+    "sources": [
+      {
+        "title": "Kombu Consumers",
+        "url": "https://docs.celeryq.dev/projects/kombu/en/stable/userguide/consumers.html"
+      },
+      {
+        "title": "Kombu Producers",
+        "url": "https://docs.celeryq.dev/projects/kombu/en/stable/userguide/producers.html"
+      }
+    ],
+    "status": "design",
+    "scope": "학습용 설계 예시입니다. 실제 실습 코드와 별도로 읽으며, 실행하려면 연결·의존성·토폴로지·Worker 구성과 장애 처리를 준비해야 합니다. 예제의 예상 결과는 실제 검증 완료 기록이 아닙니다.",
+    "reviewed_at": "2026-10-06"
+  },
+  {
+    "id": 9,
+    "title": "Celery Task의 요청·실행·결과 분리",
+    "summary": "Celery는 함수를 Task로 등록하고, 실행 요청을 메시지로 보내고, Worker가 실행한 결과를 따로 조회하는 Framework입니다. RabbitMQ가 Python 함수를 실행하는 것은 아닙니다.",
+    "flow": [
+      "HTTP 요청",
+      "apply_async → Task ID",
+      "RabbitMQ Task Queue",
+      "Celery Worker 실행",
+      "Result Backend 조회"
+    ],
+    "terms": [
+      {
+        "name": "Task / Task ID",
+        "meaning": "실행할 함수 정의와 그 실행 요청의 식별자입니다. HTTP 요청의 즉시 결과 대신 Task ID를 받을 수 있습니다."
+      },
+      {
+        "name": "Worker",
+        "meaning": "등록된 Task 이름을 실제 Python 함수에 연결해 실행하는 프로세스입니다."
+      },
+      {
+        "name": "Broker / Result Backend",
+        "meaning": "Broker는 실행 요청을 전달하고 Result Backend는 상태·결과를 저장합니다. 서로 다른 역할입니다."
+      },
+      {
+        "name": "PENDING",
+        "meaning": "아직 상태가 없다는 뜻일 수 있습니다. 미실행 외에 모르는 ID나 만료된 결과도 포함할 수 있습니다."
+      }
+    ],
+    "sections": [
+      {
+        "title": "일반 메시지와 Task 프로토콜",
+        "paragraphs": [
+          "Celery 메시지는 Task 이름·인자·Task ID 등의 표준 형식을 사용합니다. Phase 1의 {body: hello}를 그대로 Celery Queue에 넣으면 같은 Task 요청이 되는 것이 아닙니다. apply_async 또는 delay로 Celery가 메시지를 작성하게 합니다.",
+          "Worker에는 발행한 이름의 Task가 등록돼 있어야 합니다. API에 임의 Task 이름·코드를 받아 실행하는 기능을 열지 않고, 학습용 함수와 입력 범위를 고정합니다."
+        ]
+      },
+      {
+        "title": "비동기 요청을 HTTP에서 활용하기",
+        "paragraphs": [
+          "API는 발행 요청 후 Task ID를 반환하고 브라우저는 별도 상태 조회를 합니다. FastAPI 요청 안에서 긴 AsyncResult.get을 호출하면 그 요청이 기다리게 돼 분리의 장점을 잃습니다.",
+          "Task 본문은 Worker에서 실행됩니다. Result Backend가 없거나 결과 무시 설정이면 완료 결과 조회가 제한됩니다. 결과 보관 TTL이 만료돼도 업무 DB 효과가 사라지는 것은 아닙니다."
+        ]
+      },
+      {
+        "title": "실행 환경과 결과 모델",
+        "paragraphs": [
+          "아래는 Redis Result Backend를 선택하는 설계 예시입니다. 현재 Compose에는 이 서비스와 Celery Worker가 추가돼 있지 않습니다. PostgreSQL 업무 DB와 결과 저장소는 목적을 구분해 설계합니다.",
+          "Windows PC에서는 현재처럼 Linux 컨테이너에서 Worker를 실행합니다. serializer와 accept_content를 JSON으로 제한하고 Task 시작 관측, 성공·오류·만료 표시를 분리합니다."
+        ]
+      }
+    ],
+    "codes": [
+      {
+        "title": "설계 예시 · tasks.py와 비동기 발행",
+        "language": "python",
+        "code": "import os\nfrom celery import Celery\n\napp = Celery(\"messageflow\", broker=os.environ[\"BROKER_URL\"],\n             backend=os.environ[\"RESULT_BACKEND\"])\napp.conf.update(task_serializer=\"json\", result_serializer=\"json\",\n                accept_content=[\"json\"], task_track_started=True)\n\n@app.task(name=\"lab.add\")\ndef add(x: int, y: int):\n    return x + y\n\n# API에서 호출합니다. add 본문을 여기서 실행하지 않습니다.\ndef submit_add(x, y):\n    job = add.apply_async(args=[x, y], queue=\"phase9.tasks\")\n    return {\"task_id\": job.id}\n\ndef lookup(task_id):\n    job = app.AsyncResult(task_id)\n    return {\"state\": job.state,\n            \"result\": job.result if job.successful() else None}",
+        "notes": [
+          "BROKER_URL은 RabbitMQ AMQP 주소, RESULT_BACKEND는 설계한 결과 저장소 주소입니다. 실제 값은 환경변수에서 주입합니다.",
+          "job.id로 후속 요청을 연결합니다. PENDING을 단순 대기나 실패로 확정하지 않습니다. 성공일 때만 숫자 결과를 반환합니다.",
+          "실제 API에는 입력·Task ID 인증/소유권, 오류 응답, 결과 만료 처리도 필요합니다. 예시는 Task 역할을 읽는 핵심 부분입니다."
+        ],
+        "path": null,
+        "kind": "design"
+      },
+      {
+        "title": "설계 예시 · Linux 컨테이너 안의 Worker 실행",
+        "language": "shell",
+        "code": "celery -A tasks worker --loglevel=INFO --queues=phase9.tasks --concurrency=1",
+        "notes": [
+          "tasks.py와 의존성·환경변수가 준비된 Worker 컨테이너 안에서 실행하는 명령입니다. 현재 호스트에서 그대로 실행하는 실습 명령은 아닙니다."
+        ],
+        "path": null,
+        "kind": "design"
+      }
+    ],
+    "experiments": [
+      {
+        "action": "Worker 정지 중 Task 발행",
+        "expected": "Task Queue에 대기",
+        "reason": "API 발행과 함수 실행 시점이 분리됩니다."
+      },
+      {
+        "action": "Worker 시작",
+        "expected": "결과 5 조회 가능",
+        "reason": "add(2, 3)을 Worker가 실행하고 결과 저장소에 반영합니다."
+      },
+      {
+        "action": "모르는 Task ID 조회",
+        "expected": "PENDING 등 알 수 없음 상태",
+        "reason": "진행 중인 실제 Task가 있다는 증거는 아닙니다."
+      }
+    ],
+    "pitfalls": [
+      "Task result를 비즈니스 원장처럼 쓰지 않습니다. 결과 만료와 업무 데이터 영속성은 별개입니다.",
+      "Task ID만 알고 아무 사용자 결과를 조회할 수 있게 만들지 않습니다. 접근 범위를 설계합니다."
+    ],
+    "questions": [
+      "Broker와 Result Backend가 각각 중단되면 어떤 기능이 달라질까요?",
+      "delay 호출과 Python 함수 직접 호출은 어디에서 실행되는지가 어떻게 다른가요?"
+    ],
+    "sources": [
+      {
+        "title": "Celery Task 호출",
+        "url": "https://docs.celeryq.dev/en/stable/userguide/calling.html"
+      },
+      {
+        "title": "Celery Tasks",
+        "url": "https://docs.celeryq.dev/en/stable/userguide/tasks.html"
+      }
+    ],
+    "status": "design",
+    "scope": "학습용 설계 예시입니다. 실제 실습 코드와 별도로 읽으며, 실행하려면 연결·의존성·토폴로지·Worker 구성과 장애 처리를 준비해야 합니다. 예제의 예상 결과는 실제 검증 완료 기록이 아닙니다.",
+    "reviewed_at": "2026-10-06"
+  },
+  {
+    "id": 10,
+    "title": "Celery Retry·ACK·Worker 종료를 구분",
+    "summary": "Task Framework에도 장애 위치별 결과가 있습니다. Worker 실행 자식이 죽은 상황, 전체 연결이 닫힌 상황, Task가 스스로 Retry를 요청한 상황을 같은 실패로 묶지 않습니다.",
+    "flow": [
+      "Task Queue 분기",
+      "Worker 실행",
+      "early / late ACK 정책",
+      "retry 또는 worker-lost",
+      "Task 이력 + 업무 결과 비교"
+    ],
+    "terms": [
+      {
+        "name": "early / late ACK",
+        "meaning": "실행 이전 확인과 실행 이후 확인 정책입니다. 실제 실패/종료 처리는 추가 설정 영향을 받습니다."
+      },
+      {
+        "name": "self.retry",
+        "meaning": "Celery가 다음 Task 시도를 발행하는 동작입니다. Broker가 ACK 없는 전달을 되돌리는 것과 다릅니다."
+      },
+      {
+        "name": "task_reject_on_worker_lost",
+        "meaning": "실행 자식의 갑작스러운 종료 시 requeue 동작에 영향을 주는 설정입니다. 반복 실패 Task는 무한 재실행을 주의합니다."
+      },
+      {
+        "name": "Routing / Events",
+        "meaning": "Task를 특정 Queue로 보내는 설정과 Worker가 보내는 실행 관측 이벤트입니다. 이벤트 수집에도 중단·누락이 가능합니다."
+      }
+    ],
+    "sections": [
+      {
+        "title": "ACK 시점만으로 설명이 끝나지 않습니다",
+        "paragraphs": [
+          "early ACK이면 실행 중 전체 Worker가 사라졌을 때 Broker는 이미 확인된 작업을 다시 줄 수 없습니다. late ACK는 실행 후 확인을 목표로 하지만 실행 자식이 사라지는 경우에도 무조건 requeue되는 것은 아닙니다.",
+          "task_reject_on_worker_lost, 실패/timeout ACK 정책, 전체 Worker와 자식 종료 여부를 따로 기록해야 합니다. 같은 설정 이름의 의미도 설치 Celery 버전 문서와 실제 장애 실험으로 확인합니다."
+        ]
+      },
+      {
+        "title": "Retry가 유지하는 것과 새로 생기는 것",
+        "paragraphs": [
+          "self.retry는 같은 Task ID의 추가 실행 요청을 만들 수 있습니다. 시도 기록에는 retries·새 attempt_id·Worker·시각을 포함해 하나의 Task가 몇 번 실행됐는지 구분합니다.",
+          "Task가 retry_count를 늘린 것과 Broker redelivered는 서로 다른 축입니다. 영구 실패를 무조건 autoretry하지 않고 특정 일시 예외만 bounded retry합니다. 중복 가능한 업무는 Phase 6의 보호를 사용합니다."
+        ]
+      },
+      {
+        "title": "관측 결과를 대조하기",
+        "paragraphs": [
+          "Celery Event Collector가 Worker 이벤트를 받아 저장하고 Task 화면을 갱신합니다. 수집기가 죽으면 이벤트가 빠질 수 있어 이벤트 없음이 실행 없음이라는 증거가 아닙니다. Broker 지표·Result Backend·업무 DB도 대조합니다.",
+          "설정 변경은 실행 프로필로 기록하고 해당 Worker를 재시작하여 적용을 확인합니다. 전체 Broker를 종료하지 않고 제어기가 소유한 고정 Worker만 장애 대상으로 선택합니다."
+        ]
+      }
+    ],
+    "codes": [
+      {
+        "title": "설계 예시 · Queue 분리와 제한된 Retry",
+        "language": "python",
+        "code": "# app은 Phase 9에서 구성한 Celery 앱\napp.conf.task_routes = {\"lab.flaky\": {\"queue\": \"phase10.slow\"}}\n\n@app.task(bind=True, name=\"lab.flaky\", max_retries=3,\n          acks_late=True, reject_on_worker_lost=True)\ndef flaky(self, failures_before_success=2):\n    if self.request.retries < failures_before_success:\n        delay = min(2 ** self.request.retries, 30)\n        raise self.retry(exc=ConnectionError(\"학습용 일시 오류\"), countdown=delay)\n    return {\"attempt_number\": self.request.retries + 1, \"status\": \"ok\"}",
+        "notes": [
+          "이 코드는 실제 외부 호출 대신 학습용 실패를 만듭니다. failures_before_success=2이면 세 번째 실행에서 성공합니다.",
+          "max_retries는 추가 재시도 한도입니다. reject_on_worker_lost=True는 모든 업무에 무조건 권장하는 기본값이 아니라 비교할 실험 프로필입니다.",
+          "실제 구성은 ACK-on-failure/timeout, prefetch, concurrency, serializer 등 다른 설정도 저장해 종료 결과를 재현해야 합니다."
+        ],
+        "path": null,
+        "kind": "design"
+      }
+    ],
+    "experiments": [
+      {
+        "action": "일시 실패를 self.retry로 2번 반복",
+        "expected": "Task ID의 시도 3개",
+        "reason": "추가 Task 발행 Retry를 관찰합니다."
+      },
+      {
+        "action": "late ACK 자식 프로세스 강제 종료",
+        "expected": "설정별 requeue 결과 비교",
+        "reason": "자식 종료와 전체 Worker 연결 종료를 분리합니다."
+      },
+      {
+        "action": "Event Collector만 중단",
+        "expected": "업무 진행 여부 별도 대조",
+        "reason": "관측 중단과 실행 중단은 다릅니다."
+      }
+    ],
+    "pitfalls": [
+      "task_reject_on_worker_lost를 켠 poison task는 계속 Worker를 잃는 반복을 만들 수 있습니다. 격리·상한이 필요합니다.",
+      "revoke나 warm shutdown은 실행 자식 강제 종료와 같은 장애가 아닙니다. 실제 방식과 시점을 기록합니다."
+    ],
+    "questions": [
+      "Celery Retry와 RabbitMQ 재전달을 어떤 필드로 구분하나요?",
+      "late ACK를 켰는데도 특정 자식 종료에서 재실행되지 않을 수 있는 이유는 무엇인가요?"
+    ],
+    "sources": [
+      {
+        "title": "Celery ACK 관련 설정",
+        "url": "https://docs.celeryq.dev/en/stable/userguide/configuration.html"
+      },
+      {
+        "title": "Celery Retry",
+        "url": "https://docs.celeryq.dev/en/stable/userguide/tasks.html"
+      },
+      {
+        "title": "Celery Task Routing",
+        "url": "https://docs.celeryq.dev/en/stable/userguide/routing.html"
+      }
+    ],
+    "status": "design",
+    "scope": "학습용 설계 예시입니다. 실제 실습 코드와 별도로 읽으며, 실행하려면 연결·의존성·토폴로지·Worker 구성과 장애 처리를 준비해야 합니다. 예제의 예상 결과는 실제 검증 완료 기록이 아닙니다.",
+    "reviewed_at": "2026-10-06"
+  },
+  {
+    "id": 11,
+    "title": "Pyro5 RPC와 MQ 호출 방식 비교",
+    "summary": "RPC는 원격 객체를 로컬 함수처럼 호출하고 보통 응답을 기다립니다. MQ Task 요청은 먼저 Queue에 넣고 나중에 결과를 확인할 수 있습니다. 동일 계산으로 대기·장애 결과를 비교합니다.",
+    "flow": [
+      "Gateway 요청",
+      "Pyro Proxy → Daemon",
+      "Calculator 함수 실행",
+      "RPC 응답 / timeout",
+      "Celery 방식과 비교"
+    ],
+    "terms": [
+      {
+        "name": "RPC",
+        "meaning": "Remote Procedure Call: 다른 프로세스의 함수를 네트워크를 통해 호출하는 방식입니다."
+      },
+      {
+        "name": "Proxy / Daemon",
+        "meaning": "Proxy는 원격 객체를 호출하는 클라이언트, Daemon은 객체를 등록하고 요청을 처리하는 서버입니다."
+      },
+      {
+        "name": "URI / Name Server",
+        "meaning": "URI는 원격 객체 주소입니다. Name Server는 이름에서 URI를 찾게 하는 선택 서비스입니다."
+      },
+      {
+        "name": "Timeout",
+        "meaning": "호출자가 얼마나 기다릴지 제한합니다. 서버 실행을 자동 취소하거나 미실행을 증명하지 않습니다."
+      }
+    ],
+    "sections": [
+      {
+        "title": "호출이 실제로 이동하는 위치",
+        "paragraphs": [
+          "브라우저는 HTTP로 Gateway에 요청하고 Gateway의 Python 코드가 Pyro5 Proxy를 사용합니다. Pyro5 Daemon 안의 Calculator가 함수를 실행하고 결과를 반환합니다. 브라우저가 Pyro wire protocol에 직접 연결하는 구조는 아닙니다.",
+          "expose는 호출할 메서드를 공개합니다. 입력으로 임의 URI·객체·메서드 이름을 받아 서버에 연결시키지 않고, 전용 서비스의 계산 메서드만 허용합니다. 아래는 Compose 내부 직접 URI 연결 예시입니다."
+        ]
+      },
+      {
+        "title": "장애 때 달라지는 경험",
+        "paragraphs": [
+          "RPC 서비스가 정지해 있으면 연결·호출이 실패할 수 있습니다. MQ에서는 Worker가 없어도 Broker가 정상이라면 요청을 Queue에 남길 수 있습니다. 하지만 Broker가 중단되면 MQ 발행도 실패할 수 있습니다.",
+          "RPC timeout이 나더라도 서버가 계산이나 업무를 이미 진행했을 수 있습니다. 같은 요청을 다시 호출하면 중복 효과가 생길 수 있어 멱등 업무 키가 필요합니다."
+        ]
+      },
+      {
+        "title": "비교 범위를 정확히 정하기",
+        "paragraphs": [
+          "동일한 순수 합산 add(2, 3)으로 정상 결과와 대기를 비교하고, 서비스 정지·느린 계산·호출 중 단절의 조건을 하나씩 바꿉니다. 시간초과 후 서버 로그나 결과 기록을 다시 확인합니다.",
+          "MQ도 request/reply를 구현할 수 있고 Pyro도 다양한 호출 방식을 지원합니다. RPC는 항상 동기만 가능하고 MQ는 절대 응답을 못 받는다고 설명하지 않고, 이번에 선택한 실행 모델을 비교합니다."
+        ]
+      }
+    ],
+    "codes": [
+      {
+        "title": "설계 예시 · Calculator 서버",
+        "language": "python",
+        "code": "import Pyro5.api\n\n@Pyro5.api.expose\nclass Calculator:\n    def add(self, x, y):\n        return x + y\n\nwith Pyro5.api.Daemon(host=\"0.0.0.0\", port=9090) as daemon:\n    uri = daemon.register(Calculator(), objectId=\"calculator\")\n    print(uri)\n    daemon.requestLoop()",
+        "notes": [
+          "0.0.0.0은 컨테이너 내부 접속용 설계입니다. 호스트 포트를 외부에 공개하는 설정은 별도이며 현재 Compose에는 Pyro 서비스가 없습니다."
+        ],
+        "path": null,
+        "kind": "design"
+      },
+      {
+        "title": "설계 예시 · Gateway의 원격 호출",
+        "language": "python",
+        "code": "import Pyro5.api\nimport Pyro5.errors\n\ndef rpc_add(x, y):\n    with Pyro5.api.Proxy(\"PYRO:calculator@pyro-service:9090\") as proxy:\n        proxy._pyroTimeout = 3\n        try:\n            return {\"result\": proxy.add(x, y)}\n        except Pyro5.errors.TimeoutError:\n            return {\"outcome\": \"TIMEOUT\", \"server_cancelled\": False}",
+        "notes": [
+          "pyro-service는 앞으로 추가할 Compose 서비스 이름입니다. 같은 네트워크 안의 Gateway에서 호출한다고 가정합니다.",
+          "timeout은 응답 대기를 끝낸 것입니다. server_cancelled=False는 자동 취소를 관측하지 않았음을 표시합니다.",
+          "실제 Gateway에는 접속 오류·허용 입력·관측 이력·동시성·HTTP 오류 정책을 더해야 합니다."
+        ],
+        "path": null,
+        "kind": "design"
+      }
+    ],
+    "experiments": [
+      {
+        "action": "RPC와 Celery로 같은 합산 요청",
+        "expected": "정상 결과 일치",
+        "reason": "호출 모델과 계산 로직을 분리합니다."
+      },
+      {
+        "action": "RPC 서비스 / Celery Worker 정지",
+        "expected": "호출 실패 / Task 대기 비교",
+        "reason": "현재 시점에 필요한 서버가 다릅니다."
+      },
+      {
+        "action": "timeout보다 오래 실행하는 함수",
+        "expected": "호출자는 먼저 종료될 수 있음",
+        "reason": "서버의 계속 실행 여부를 별도로 관측합니다."
+      }
+    ],
+    "pitfalls": [
+      "네트워크 timeout을 서버 작업 rollback이나 취소로 처리하면 안 됩니다.",
+      "Pyro5와 Pika는 이름이 비슷해도 RPC와 AMQP 클라이언트라는 서로 다른 라이브러리입니다."
+    ],
+    "questions": [
+      "RPC timeout 후 같은 주문을 다시 요청하면 어떤 업무 키가 필요할까요?",
+      "Worker가 없어도 MQ 요청을 남길 수 있으려면 어떤 서비스는 살아 있어야 하나요?"
+    ],
+    "sources": [
+      {
+        "title": "Pyro5 Clients",
+        "url": "https://pyro5.readthedocs.io/en/latest/clientcode.html"
+      },
+      {
+        "title": "Pyro5 Servers",
+        "url": "https://pyro5.readthedocs.io/en/latest/servercode.html"
+      }
+    ],
+    "status": "design",
+    "scope": "학습용 설계 예시입니다. 실제 실습 코드와 별도로 읽으며, 실행하려면 연결·의존성·토폴로지·Worker 구성과 장애 처리를 준비해야 합니다. 예제의 예상 결과는 실제 검증 완료 기록이 아닙니다.",
+    "reviewed_at": "2026-10-06"
+  },
+  {
+    "id": 12,
+    "title": "Outbox로 DB와 발행 사이의 중단 복구",
+    "summary": "DB 저장과 RabbitMQ 발행은 하나의 DB transaction으로 묶이지 않습니다. Outbox는 “보낼 이벤트”도 업무와 같은 DB에 commit하고 Relay가 나중에 발행하도록 만들어 미발행 상태를 복구할 수 있게 합니다.",
+    "flow": [
+      "업무 + outbox 같은 commit",
+      "Relay가 미발행 row claim",
+      "네트워크 발행 / Confirm",
+      "published 표시",
+      "멱등 Consumer 업무 commit"
+    ],
+    "terms": [
+      {
+        "name": "Dual write",
+        "meaning": "DB 변경과 메시지 발행을 서로 다른 시스템에 수행하는 두 작업입니다. 사이에 실패할 수 있습니다."
+      },
+      {
+        "name": "Outbox / Relay",
+        "meaning": "Outbox는 아직 발행할 이벤트의 DB 테이블, Relay는 이를 읽어 Broker에 보내는 프로세스입니다."
+      },
+      {
+        "name": "Lease / SKIP LOCKED",
+        "meaning": "처리 소유 기간과 잠긴 행을 건너뛰는 DB 방식입니다. 여러 Relay의 경쟁과 중단 회수를 설계합니다."
+      },
+      {
+        "name": "At-least-once 영향",
+        "meaning": "발행 확인 후 DB 표시 전에 죽으면 재발행할 수 있습니다. 소비 업무의 멱등 보호를 함께 씁니다."
+      }
+    ],
+    "sections": [
+      {
+        "title": "어떤 유실 경로를 바꿀까요?",
+        "paragraphs": [
+          "업무 DB commit 후 바로 메시지를 보내는 구조에서는 발행 전 종료하면 DB 업무만 남고 이벤트가 사라질 수 있습니다. Outbox row를 업무와 같은 transaction으로 저장하면 발행 의도가 DB에 남아 Relay가 다시 찾을 수 있습니다.",
+          "반대로 발행을 먼저 하고 DB를 저장하면 발행된 이벤트가 rollback된 업무를 가리킬 수 있습니다. commit된 outbox만 발행하는 경로로 이 문제를 피합니다. 업무와 Outbox가 서로 다른 DB면 같은 단일 transaction으로 보호할 수 없습니다."
+        ]
+      },
+      {
+        "title": "Relay의 claim과 네트워크 작업",
+        "paragraphs": [
+          "FOR UPDATE SKIP LOCKED로 미발행 row를 고르고 짧은 transaction에서 lease를 갱신한 뒤 commit합니다. 네트워크 발행은 이 transaction 밖에서 하여 오래 DB lock을 붙잡지 않습니다.",
+          "Lease는 영원한 잠금이 아닙니다. Relay가 죽으면 만료 후 다른 Relay가 회수합니다. lease 기간, 재시도 backoff, 늦게 살아난 이전 Relay의 완료 표시 방지와 안정된 event_id가 필요합니다."
+        ]
+      },
+      {
+        "title": "Outbox가 중복 발행을 없애지는 않습니다",
+        "paragraphs": [
+          "Broker가 Confirm했지만 Relay가 published 표시 전에 죽으면 같은 outbox를 다시 발행할 수 있습니다. 항상 같은 event_id/업무 키를 사용하고 Phase 6 Consumer가 중복 업무를 막아야 합니다.",
+          "검증은 Broker 중단 중 commit 성공·Outbox 적체, 복구 후 전송, Confirm 후 표시 전 Relay 종료로 나눕니다. 이벤트는 시각과 source를 기록하며 Broker 내부 Routing 시각을 만들어 내지 않습니다."
+        ]
+      }
+    ],
+    "codes": [
+      {
+        "title": "설계 예시 · Outbox와 claim SQL",
+        "language": "sql",
+        "code": "CREATE TABLE outbox (\n    event_id UUID PRIMARY KEY,\n    payload JSONB NOT NULL,\n    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),\n    published_at TIMESTAMPTZ,\n    lease_owner UUID,\n    lease_until TIMESTAMPTZ,\n    next_attempt_at TIMESTAMPTZ NOT NULL DEFAULT now()\n);\n\n-- 짧은 transaction에서 한 건 claim. %s는 DB 드라이버 인자입니다.\nWITH candidate AS (\n    SELECT event_id FROM outbox\n    WHERE published_at IS NULL AND next_attempt_at <= now()\n      AND (lease_until IS NULL OR lease_until < now())\n    ORDER BY created_at\n    LIMIT 1 FOR UPDATE SKIP LOCKED\n)\nUPDATE outbox o SET lease_owner = %s,\n    lease_until = now() + interval '30 seconds'\nFROM candidate c WHERE o.event_id = c.event_id\nRETURNING o.event_id, o.payload;",
+        "notes": [
+          "업무 테이블 변경과 최초 outbox INSERT는 별도의 하나의 transaction으로 함께 commit해야 합니다. 이 코드에는 업무 테이블이 생략됐습니다.",
+          "claim SQL을 Psycopg conn.execute로 실행하고 lease_owner에 이번 claim의 새 UUID를 전달합니다. 반환 row가 없으면 현재 할 일이 없습니다."
+        ],
+        "path": null,
+        "kind": "design"
+      },
+      {
+        "title": "설계 예시 · Confirm 후 소유권 확인하여 완료 표시",
+        "language": "python",
+        "code": "import json\nimport pika\n\ndef send_claimed(conn, ch, event_id, payload, claim_token):\n    # claim transaction은 이미 commit된 상태. ch는 Confirm 모드.\n    ch.basic_publish(\n        exchange=\"phase12.events\", routing_key=\"job\", mandatory=True,\n        body=json.dumps(payload).encode(\"utf-8\"),\n        properties=pika.BasicProperties(\n            message_id=str(event_id), delivery_mode=2,\n            content_type=\"application/json\",\n        ),\n    )\n    with conn.transaction():\n        conn.execute(\n            \"UPDATE outbox SET published_at = now(), lease_until = NULL \"\n            \"WHERE event_id = %s AND lease_owner = %s \"\n            \"AND lease_until > now() AND published_at IS NULL\",\n            (event_id, claim_token),\n        )",
+        "notes": [
+          "ch.confirm_delivery()와 토폴로지가 사전에 준비돼야 합니다. 발행 오류가 나면 완료 UPDATE를 실행하지 않습니다.",
+          "발행 성공과 UPDATE 사이가 중복 가능 지점입니다. lease가 만료되어 UPDATE가 0행이면 다시 발행될 수 있어 Consumer 멱등성이 필수입니다.",
+          "실제 Relay에는 bounded backoff, 실패 이유·attempts·영구 격리, 주기 polling, lease 회수, 인덱스·종료 처리와 payload 검증이 더 필요합니다."
+        ],
+        "path": null,
+        "kind": "design"
+      }
+    ],
+    "experiments": [
+      {
+        "action": "전용 Broker 중단 중 업무 저장",
+        "expected": "업무와 미발행 Outbox가 함께 남음",
+        "reason": "발행 의도가 DB에 영속화됩니다."
+      },
+      {
+        "action": "Broker 복구",
+        "expected": "적체 감소·Consumer 효과 대조",
+        "reason": "단순 발행 수가 아니라 업무 결과까지 확인합니다."
+      },
+      {
+        "action": "Confirm 후 UPDATE 전 Relay 종료",
+        "expected": "동일 이벤트 재발행, 업무 효과 1회",
+        "reason": "Relay 중복 가능성과 멱등 Consumer를 함께 검증합니다."
+      }
+    ],
+    "pitfalls": [
+      "Outbox를 exactly-once 발행 기능이라고 설명하지 않습니다.",
+      "Relay가 선택한 row를 먼저 published로 바꾸고 나중에 발행하면 장애 시 복구할 미발행 이벤트를 숨깁니다."
+    ],
+    "questions": [
+      "업무와 Outbox를 같은 transaction에 넣는 이유는 무엇인가요?",
+      "네트워크 작업을 DB row lock 안에서 오래 실행하면 어떤 문제가 생기나요?"
+    ],
+    "sources": [
+      {
+        "title": "PostgreSQL SKIP LOCKED",
+        "url": "https://www.postgresql.org/docs/current/sql-select.html"
+      },
+      {
+        "title": "프로젝트 Outbox 설계안",
+        "url": "https://github.com/amirer21/message-flow-lab/blob/main/docs/remaining-development-plan.md"
+      }
+    ],
+    "status": "design",
+    "scope": "학습용 설계 예시입니다. 실제 실습 코드와 별도로 읽으며, 실행하려면 연결·의존성·토폴로지·Worker 구성과 장애 처리를 준비해야 합니다. 예제의 예상 결과는 실제 검증 완료 기록이 아닙니다.",
+    "reviewed_at": "2026-10-06"
+  }
+]

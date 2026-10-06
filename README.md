@@ -161,3 +161,7 @@ RabbitMQ volume과 `data/events.jsonl`은 유지됩니다. 기존 RabbitMQ volum
 `docs/learning-plan.md`의 완료 기준을 따라 Phase 4부터 확장합니다. 데이터베이스·Kombu·Celery·Pyro는 각 학습 단계에서 도입합니다.
 
 공식 자료: [RabbitMQ Python 튜토리얼](https://www.rabbitmq.com/tutorials), [ACK와 Confirm](https://www.rabbitmq.com/docs/confirms), [Pika](https://pika.readthedocs.io/en/stable/), [Vue](https://vuejs.org/guide/quick-start.html).
+
+## Phase별 자세한 기술 학습
+
+각 Phase의 **학습 가이드** 탭에서 전체 흐름, 용어 정의, 내부 동작, 코드 해설, 실험·예상 결과, 흔한 오해를 읽을 수 있습니다. Phase 0–3은 실제 구현 코드 발췌이며, Phase 4–12는 실행 환경을 추가해야 하는 교육용 설계 예시입니다. [기술 학습 문서 모음](docs/technical-learning-guide.md)에서 같은 내용을 Markdown으로 읽을 수 있습니다.
