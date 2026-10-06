@@ -6,6 +6,8 @@ RabbitMQ → Pika → Kombu → Celery 순서로 배우는 실습 프로젝트�
 
 ## 처음 실행
 
+처음 준비하는 PC에서는 [실습 환경 구축 및 실행 가이드](docs/setup-and-run.md)를 따라 도구 확인, 환경 설정, 실행, 첫 실험, 검증과 오류 해결을 진행하세요.
+
 코드를 함께 배우려면 [도구와 코드 해설](docs/code-explained.md)을 먼저 읽으세요. 현재 구현된 RabbitMQ·Pika 코드와 앞으로 도입할 Celery·Pyro5 예시를 구분하여 설명합니다.
 
 단계별 함수·입출력·상태 변화·데이터 흐름은 [Phase별 코드 학습 안내](docs/phase-code-study.md)에서 Phase 0–3 문서로 따라가세요.
