@@ -12,7 +12,9 @@
 
 현재 코드의 학습용 설명은 [도구와 코드 해설](code-explained.md)을 참고하고, 새 Phase 구현 시 해당 도구·주요 코드·실행 흐름 설명도 함께 갱신하세요. 미구현 도구의 설명용 예시를 실제 구현으로 표시하지 마세요.
 
-문서 작성 기준으로 Phase 0–3이 구현됐으며 **다음 작업은 Phase 4**입니다. 시작 시 실제 Git 상태와 소스를 확인하고 문서와 다르면 차이를 기록하세요. 미완료 단계를 완료로 표시하거나 예시 화면만 만들고 실제 연동을 완료했다고 보고하지 마세요.
+[Phase별 코드 학습 안내](phase-code-study.md)의 `docs/code-study/phaseN.md`도 추가하세요. 실제 파일과 함수, 입출력, HTTP/IPC/AMQP 호출 순서, 상태 변화, 실패 로직, 예시/실제 차이와 학습 문제를 포함하고 소스 변경 시 함께 갱신합니다.
+
+문서 작성 기준으로 Phase 0–4가 구현됐으며 **다음 작업은 Phase 5**입니다. 시작 시 실제 Git 상태와 소스를 확인하고 문서와 다르면 차이를 기록하세요. 미완료 단계를 완료로 표시하거나 예시 화면만 만들고 실제 연동을 완료했다고 보고하지 마세요.
 
 ## 2. 환경·저장소
 
@@ -102,6 +104,7 @@ Git ownership 오류가 날 경우 checkout 경로와 소유권을 확인한 뒤
 | Phase 1 | `POST /rabbit/messages`, `GET /rabbit/messages`, `POST /consumer/start`, `/stop`, `/ack` |
 | Phase 2 | `GET /experiments/snapshot`, `POST /experiments/messages`, `/start`, `/stop`, `/process`, `/ack`, `/crash` |
 | Phase 3 | `GET /routing/snapshot`, `POST /routing/setup`, `/bindings`, `/messages`, `/receive` |
+| Phase 4 | `GET /reliability/snapshot`, `POST /reliability/setup`, `/publish`, `/receive` |
 
 Phase 1 ACK와 Phase 2 process/ACK는현재 delivery의 `attempt_id`를 사용합니다. stale 시도에 대한 동작은 409이며 다음 전달을 ACK해서는 안 됩니다.
 
@@ -144,9 +147,10 @@ node 'C:\nvm4w\nodejs\node_modules\npm\bin\npm-cli.js' run build
 docker compose exec -T api python scripts/smoke.py
 docker compose exec -T api python scripts/smoke_phase2.py
 docker compose exec -T api python scripts/smoke_phase3.py
+docker compose exec -T api python scripts/smoke_phase4.py
 ```
 
-Phase 1/2 스크립트는 기존 메시지·Consumer가 있으면 중단하고 자동 purge하지 않습니다. Phase 3 스크립트는 **현재 Phase 3 임시 토폴로지와 대기 메시지를 초기화**합니다. 진행 중인 사용자 실험이 있는지 확인하고 전용 테스트 환경에서 실행하는 방식을 우선합니다.
+Phase 1/2 스크립트는 기존 메시지·Consumer가 있으면 중단하고 자동 purge하지 않습니다. Phase 3/4 스크립트는 **현재 해당 Phase의 임시 토폴로지와 대기 메시지를 초기화**합니다. 진행 중인 사용자 실험이 있는지 확인하고 전용 테스트 환경에서 실행하는 방식을 우선합니다.
 
 새 단계마다 실제 정상/실패 smoke 스크립트를 추가합니다. 실패 원인과 실제 실행 증거를 남기고 예상값을 맞추려고 메시지를 임의 삭제하지 마세요. 단위 검증의 mock 통과를 실제 Broker 검증으로 보고하지 않습니다.
 

@@ -8,7 +8,7 @@
 | 1 | Pika·Producer·Consumer·Manual ACK | 3개 발행 → Ready 3 → Unacked 1 → ACK 후 0 | 구현 |
 | 2 | 전달·ACK·Consumer 종료 | ACK 전/후 강제 종료, 재전달과 중복 업무 반영 비교 | 구현 |
 | 3 | Direct·Fanout·Topic Routing | Binding에 따른 수신 Queue 예측 | 구현 |
-| 4 | Confirm·Return·Persistent·Durable | Broker 수락과 라우팅·업무 완료 구분 | 예정 |
+| 4 | Confirm·Return·Persistent·Durable | Broker 수락과 라우팅·업무 완료 구분 | 구현 |
 | 5 | Retry·Requeue·TTL·DLQ | 제한된 재시도와 영구 실패 격리 | 예정 |
 | 6 | PostgreSQL·멱등성 | 동시 중복 요청에도 업무 효과 한 번 | 예정 |
 | 7 | Worker·Prefetch·성능 | 같은 부하에서 처리량과 대기시간 비교 | 예정 |
@@ -52,4 +52,4 @@ Quorum Queue 복제 장애와 안전한 dead-lettering, Celery Canvas/Beat/Autos
 
 ## 개발 인계
 
-후속 구현은 [남은 단계 개발 계획서](remaining-development-plan.md)와 [AI 에이전트 작업 지침](ai-agent-instructions.md)을 따릅니다. 다음 구현 단계는 Phase 4입니다.
+후속 구현은 [남은 단계 개발 계획서](remaining-development-plan.md)와 [AI 에이전트 작업 지침](ai-agent-instructions.md)을 따릅니다. 다음 구현 단계는 Phase 5입니다.

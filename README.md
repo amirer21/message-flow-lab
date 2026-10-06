@@ -1,12 +1,14 @@
-# MessageFlow Lab · Phase 0–3
+# MessageFlow Lab · Phase 0–4
 
-RabbitMQ → Pika → Kombu → Celery 순서로 배우는 실습 프로젝트입니다. 현재 구현은 Phase 0~3입니다. Phase 4~12는 사이트에서 학습 범위와 완료 기준을 확인할 수 있고, 실습 기능은 후속 단계에서 추가합니다.
+RabbitMQ → Pika → Kombu → Celery 순서로 배우는 실습 프로젝트입니다. 현재 구현은 Phase 0~4입니다. Phase 5~12는 사이트에서 학습 범위와 완료 기준을 확인할 수 있고, 실습 기능은 후속 단계에서 추가합니다.
 
 [GitHub 공개 저장소](https://github.com/amirer21/message-flow-lab) · [Sites 학습 화면](https://messageflow-lab-amire.mirohong.chatgpt.site)
 
 ## 처음 실행
 
 코드를 함께 배우려면 [도구와 코드 해설](docs/code-explained.md)을 먼저 읽으세요. 현재 구현된 RabbitMQ·Pika 코드와 앞으로 도입할 Celery·Pyro5 예시를 구분하여 설명합니다.
+
+단계별 함수·입출력·상태 변화·데이터 흐름은 [Phase별 코드 학습 안내](docs/phase-code-study.md)에서 Phase 0–3 문서로 따라가세요.
 
 Docker Desktop(Docker Compose 포함), Python 3.12 이상이 필요합니다. Docker의 Linux 컨테이너 모드를 사용하세요.
 
@@ -73,6 +75,18 @@ Direct/Fanout/Topic을 선택하고 Queue A/B/C의 Binding을 편집합니다. �
 
 Phase 3은 `phase3.<uuid>`의 임시 Exchange·exclusive Queue를 사용합니다. 새 실험은 현재 Phase 3의 대기 메시지를 삭제하며 API 연결 종료 시에도 임시 Queue가 삭제됩니다. Phase 1·2와 분리됩니다. Binding 변경은 기존 대기 메시지를 이동시키지 않습니다. Publisher Confirm은 Phase 4에서 추가합니다. 상세 절차는 [Phase 3 안내](docs/phase3.md)를 참고하세요.
 
+## Phase 4 · 발행 신뢰성
+
+Publisher Confirm, mandatory Return, durable/persistent 메시지를 별도로 비교합니다. Phase 4 전용 Exchange와 Queue를 사용하며 Confirm 모드에서 발행합니다.
+
+4가지 시나리오:
+- **정상 Confirm**: durable Queue에 라우팅 → Confirm ACK 수신
+- **Mandatory Return**: binding 없는 key + mandatory → Confirm ACK + Return 동시 수신
+- **영속 메시지**: delivery_mode=2 + durable Queue → 재시작 후 잔존
+- **임시 메시지**: delivery_mode=1 + auto_delete Queue → 재시작 후 소멸
+
+Confirm ACK는 Broker 수락이며 Consumer 처리 완료가 아닙니다. Return과 Confirm은 독립적인 사실입니다. 상세 절차는 [Phase 4 안내](docs/phase4.md)를 참고하세요.
+
 ## Python으로 직접 실습
 
 UI와 API를 거치지 않는 Pika Producer:
@@ -105,13 +119,15 @@ API는 한 프로세스로 실행하세요. 교육용 Consumer 컨트롤러는 �
 
 ## 검증
 
-실제 Docker·RabbitMQ 환경에서 Phase 1·2·3을 검증했습니다. 환경, 결과와 범위는 [검증 기록](docs/verification.md)을 참고하세요.
+실제 Docker·RabbitMQ 환경에서 Phase 1·2·3·4를 검증했습니다. 환경, 결과와 범위는 [검증 기록](docs/verification.md)을 참고하세요.
 
 실제 Broker 통합 검증(Queue에 기존 메시지나 Consumer가 있으면 중단하며 자동 purge하지 않습니다):
 
 ```powershell
 docker compose exec api python scripts/smoke.py
 docker compose exec api python scripts/smoke_phase2.py
+docker compose exec api python scripts/smoke_phase3.py
+docker compose exec api python scripts/smoke_phase4.py
 ```
 
 API·ACK 방어·업무 효과 저장 검증:
@@ -158,7 +174,7 @@ RabbitMQ volume과 `data/events.jsonl`은 유지됩니다. 기존 RabbitMQ volum
 
 ## 다음 단계
 
-`docs/learning-plan.md`의 완료 기준을 따라 Phase 4부터 확장합니다. 데이터베이스·Kombu·Celery·Pyro는 각 학습 단계에서 도입합니다.
+`docs/learning-plan.md`의 완료 기준을 따라 Phase 5부터 확장합니다. 데이터베이스·Kombu·Celery·Pyro는 각 학습 단계에서 도입합니다.
 
 공식 자료: [RabbitMQ Python 튜토리얼](https://www.rabbitmq.com/tutorials), [ACK와 Confirm](https://www.rabbitmq.com/docs/confirms), [Pika](https://pika.readthedocs.io/en/stable/), [Vue](https://vuejs.org/guide/quick-start.html).
 
