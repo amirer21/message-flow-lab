@@ -1,0 +1,55 @@
+services:
+  rabbitmq:
+    image: rabbitmq:4.2-management
+    hostname: rabbitmq
+    environment:
+      RABBITMQ_DEFAULT_USER: ${RABBIT_USER:-lab}
+      RABBITMQ_DEFAULT_PASS: ${RABBIT_PASSWORD:?Run python scripts/init_env.py first}
+      RABBITMQ_DEFAULT_VHOST: lab
+    ports:
+      - "127.0.0.1:5672:5672"
+      - "127.0.0.1:15672:15672"
+    volumes:
+      - rabbit-data:/var/lib/rabbitmq
+      - ./infra/rabbitmq/rabbitmq.conf:/etc/rabbitmq/rabbitmq.conf:ro
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+  api:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    environment:
+      RABBIT_HOST: rabbitmq
+      RABBIT_USER: ${RABBIT_USER:-lab}
+      RABBIT_PASSWORD: ${RABBIT_PASSWORD}
+      RABBIT_VHOST: lab
+      RABBIT_MANAGEMENT_URL: http://rabbitmq:15672
+      LAB_TOKEN: ${LAB_TOKEN:?Run python scripts/init_env.py first}
+      ALLOWED_ORIGINS: ${ALLOWED_ORIGINS:-http://localhost:5173}
+      EVENT_LOG: /lab/data/events.jsonl
+    ports:
+      - "127.0.0.1:8000:8000"
+    volumes:
+      - ./data:/lab/data
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+  frontend:
+    build:
+      context: .
+      dockerfile: frontend/Dockerfile
+    ports:
+      - "127.0.0.1:5173:80"
+    depends_on:
+      api:
+        condition: service_healthy
+volumes:
+  rabbit-data:
