@@ -47,6 +47,7 @@ class ConsumerSession:
         return self.view()
 
     def command(self, kind, attempt_id=None):
+        # Python Queue로 명령을 넘겨 Pika 연결을 소유한 스레드에서 ACK/종료한다.
         with self._lock:
             if not self._active:
                 raise ValueError("실행 중인 Consumer가 없습니다.")
@@ -63,6 +64,7 @@ class ConsumerSession:
         except (ValueError, TypeError):
             pass
         pending = {
+            # 논리 메시지 ID는 재전달에도 유지하고, 전달 시도 ID는 매번 새로 만든다.
             "message_id": properties.message_id or str(uuid4()),
             "attempt_id": str(uuid4()), "body": text, "redelivered": method.redelivered,
         }
@@ -72,6 +74,7 @@ class ConsumerSession:
         events.record("DELIVERED", pending["message_id"], attempt_id=pending["attempt_id"], worker="consumer-lab", body=text, redelivered=method.redelivered)
 
     def _ack(self, channel, attempt_id):
+        # 이전 버튼 요청이 다음 전달을 ACK하지 않도록 현재 시도를 먼저 대조한다.
         with self._lock:
             pending = self._pending
             tag = self._delivery_tag

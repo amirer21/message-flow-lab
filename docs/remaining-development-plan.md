@@ -44,7 +44,8 @@ Vue 대시보드 ─ HTTP + X-Lab-Token → FastAPI Gateway
 | `backend/app/consumer.py`, `experiments.py` | Consumer 제어와 Phase 2 자식 프로세스 |
 | `backend/app/routing.py` | 전용 스레드가 소유하는 Phase 3 임시 토폴로지 |
 | `backend/app/events.py`, `effects.py` | 세션 이벤트 및 디스크 업무 기록 |
-| `workers/pika_worker/` | 직접 실행용 Pika Worker와 Phase 2 Worker |
+| `workers/pika_worker/` | 직접 실행용 Pika Worker |
+| `backend/app/phase2_worker.py` | 제어기가 실행하는 Phase 2 자식 Consumer |
 | `docker-compose.yml`, `infra/` | 로컬 서비스와 RabbitMQ 설정 |
 | `scripts/`, `backend/tests/`, `frontend/tests/` | 실행·패키징·실제 실험·단위 검증 |
 

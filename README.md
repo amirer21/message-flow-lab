@@ -6,6 +6,8 @@ RabbitMQ → Pika → Kombu → Celery 순서로 배우는 실습 프로젝트�
 
 ## 처음 실행
 
+코드를 함께 배우려면 [도구와 코드 해설](docs/code-explained.md)을 먼저 읽으세요. 현재 구현된 RabbitMQ·Pika 코드와 앞으로 도입할 Celery·Pyro5 예시를 구분하여 설명합니다.
+
 Docker Desktop(Docker Compose 포함), Python 3.12 이상이 필요합니다. Docker의 Linux 컨테이너 모드를 사용하세요.
 
 ```powershell
@@ -26,6 +28,8 @@ RabbitMQ 관리 화면의 계정은 `.env`의 `RABBIT_USER`와 `RABBIT_PASSWORD`
 기본 화면은 **설명용 예시**입니다. 예시 버튼은 실제 RabbitMQ에 메시지를 보내지 않습니다. 실제 연결을 확인한 뒤 실험하세요.
 
 ## 첫 실험
+
+ACK가 처음이라면 화면의 **ACK란 무엇인가요?**와 **실습 용어 쉽게 이해하기**를 먼저 읽어 보세요. 같은 설명은 [Phase 1 용어 안내](docs/phase1.md)에도 있습니다.
 
 1. 독립된 `hello` Queue에서 Consumer를 멈춥니다.
 2. 메시지 `hello`를 **3개 발행**합니다.

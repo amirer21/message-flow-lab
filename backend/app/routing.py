@@ -108,6 +108,7 @@ class RoutingLab:
         self.record("TOPOLOGY_CREATED", exchange_type=kind)
 
     def snapshot(self, channel):
+        # passive 선언으로 개수만 조회한다. 메시지를 꺼내는 basic_get과 구분한다.
         queues = [{**queue, "ready": channel.queue_declare(queue=queue["name"], passive=True).method.message_count} for queue in self._queues]
         return {"exchange_type": self._kind, "exchange": self._exchange, "queues": queues,
                 "events": list(reversed(self._records)), "last_received": self._received,
@@ -130,6 +131,7 @@ class RoutingLab:
                 raise ValueError("빈 메시지는 발행할 수 없습니다.")
             message_id = str(uuid4())
             envelope = {"body": payload.body, "prediction": payload.prediction}
+            # prediction은 학습 기록이다. 실제 Queue 선택은 RabbitMQ의 Binding이 결정한다.
             channel.basic_publish(exchange=self._exchange, routing_key=payload.routing_key,
                                   body=json.dumps(envelope, ensure_ascii=False).encode("utf-8"),
                                   properties=pika.BasicProperties(message_id=message_id, content_type="application/json"))

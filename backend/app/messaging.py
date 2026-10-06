@@ -10,6 +10,7 @@ from .events import events
 
 @contextmanager
 def connection():
+    """AMQP 연결을 열고 with 블록 종료 시 닫는다. 접속값은 서버 환경변수에서 읽는다."""
     params = pika.ConnectionParameters(
         host=settings.rabbit_host, port=settings.rabbit_port,
         virtual_host=settings.rabbit_vhost,
@@ -26,10 +27,12 @@ def connection():
 
 
 def declare(channel, queue=None):
+    # durable은 Queue 속성이다. 메시지 persistence와 Publisher Confirm은 별도다.
     return channel.queue_declare(queue=queue or settings.queue, durable=True)
 
 
 def publish(body: str, count: int, queue=None):
+    """기본 Exchange로 발행한다. 호출 반환은 소비 완료나 Confirm 수신을 뜻하지 않는다."""
     queue = queue or settings.queue
     message_ids = []
     with connection() as conn:

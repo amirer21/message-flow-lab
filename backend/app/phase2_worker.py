@@ -79,6 +79,7 @@ def main():
                                 if pending["processed"]:
                                     raise ValueError("이 처리 시도는 이미 업무를 반영했습니다.")
                                 effect = append_effect(pending["message_id"], pending["attempt_id"])
+                                # 업무 기록 후 ACK 전 종료하면 새 전달에서 업무가 반복될 수 있다.
                                 pending["processed"] = True
                                 emit("event", event_type="PROCESSED", pending=pending, effect=effect)
                             else:
