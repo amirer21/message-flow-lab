@@ -6,7 +6,7 @@
 |---|---|---|---|
 | 0 | 최소 환경·AMQP·Management | 환경 시작/종료 재현, 포트 역할 설명 | 구현 |
 | 1 | Pika·Producer·Consumer·Manual ACK | 3개 발행 → Ready 3 → Unacked 1 → ACK 후 0 | 구현 |
-| 2 | 전달·ACK·Consumer 종료 | ACK 전/후 종료와 재전달 비교 | 예정 |
+| 2 | 전달·ACK·Consumer 종료 | ACK 전/후 강제 종료, 재전달과 중복 업무 반영 비교 | 구현 |
 | 3 | Direct·Fanout·Topic Routing | Binding에 따른 수신 Queue 예측 | 예정 |
 | 4 | Confirm·Return·Persistent·Durable | Broker 수락과 라우팅·업무 완료 구분 | 예정 |
 | 5 | Retry·Requeue·TTL·DLQ | 제한된 재시도와 영구 실패 격리 | 예정 |
@@ -30,7 +30,9 @@ Celery early/late ACK와 task_reject_on_worker_lost를 별도 실험합니다. E
 
 Phase 0~1: 단계별 안내, 예시/실제 연결, 메시지 발행, Queue 요약, 수동 ACK, 관측 이력, 기기별 실험 기록.
 
-Phase 2~5: 재전달, Routing, Confirm/Return, Retry와 DLQ 화면.
+Phase 2: 별도 Queue와 실제 자식 Consumer 프로세스, ACK 전/후 강제 종료, 같은 메시지의 시도 이력, 영속 학습용 업무 반영 횟수.
+
+Phase 3~5: Routing, Confirm/Return, Retry와 DLQ 화면.
 
 Phase 6~10: PostgreSQL 실험/관측 이벤트 저장, Worker 비교, Kombu 비교, Task 상세와 Celery 이벤트.
 

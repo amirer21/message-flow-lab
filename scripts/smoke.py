@@ -19,14 +19,20 @@ def get_snapshot():
 def wait_for(predicate):
     deadline = time.monotonic() + 20
     while time.monotonic() < deadline:
-        state = get_snapshot()
+        try:
+            state = get_snapshot()
+        except httpx.HTTPStatusError as exc:
+            if exc.response.status_code != 503:
+                raise
+            time.sleep(0.5)
+            continue
         if predicate(state):
             return state
         time.sleep(0.5)
     raise AssertionError("State did not converge within 20 seconds")
 
 
-initial = get_snapshot()
+initial = wait_for(lambda s: True)
 if initial["consumer_active"] or initial["queue"]["ready"] or initial["queue"]["unacked"] or initial["queue"]["consumers"]:
     raise SystemExit("먼저 독립 실습 Queue를 비우고 Consumer를 멈추세요. 이 검증은 메시지를 자동 삭제하지 않습니다.")
 response = client.post("/rabbit/messages", json={"body": "smoke", "count": 3})

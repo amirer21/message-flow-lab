@@ -15,7 +15,9 @@ class Settings:
         origin.strip() for origin in os.getenv("ALLOWED_ORIGINS", "http://localhost:5173").split(",") if origin.strip()
     )
     event_log: str = os.getenv("EVENT_LOG", "data/events.jsonl")
+    effect_log: str = os.getenv("PHASE2_EFFECT_LOG", "data/phase2-effects.jsonl")
     queue: str = "hello"
+    experiment_queue: str = "phase2.ack_lab"
 
 
 settings = Settings()

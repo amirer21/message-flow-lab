@@ -1,6 +1,8 @@
-# MessageFlow Lab · Phase 0–1
+# MessageFlow Lab · Phase 0–2
 
-RabbitMQ → Pika → Kombu → Celery 순서로 배우는 실습 프로젝트입니다. 현재 구현은 Phase 0~1입니다. Phase 2~12는 사이트에서 학습 범위와 완료 기준을 확인할 수 있고, 실습 기능은 후속 단계에서 추가합니다.
+RabbitMQ → Pika → Kombu → Celery 순서로 배우는 실습 프로젝트입니다. 현재 구현은 Phase 0~2입니다. Phase 3~12는 사이트에서 학습 범위와 완료 기준을 확인할 수 있고, 실습 기능은 후속 단계에서 추가합니다.
+
+[GitHub 공개 저장소](https://github.com/amirer21/message-flow-lab) · [Sites 학습 화면](https://messageflow-lab-amire.mirohong.chatgpt.site)
 
 ## 처음 실행
 
@@ -35,6 +37,32 @@ RabbitMQ 관리 화면의 계정은 `.env`의 `RABBIT_USER`와 `RABBIT_PASSWORD`
 
 관리 지표는 주기적으로 수집됩니다. 조작 직후 숫자가 잠시 늦게 바뀔 수 있습니다. 실습 Consumer는 Prefetch 1, Manual ACK이며 UI가 현재 전달의 `attempt_id`를 확인한 후 ACK합니다. Consumer 멈춤은 연결을 닫으므로 ACK하지 않은 메시지가 재전달될 수 있습니다.
 
+## Phase 2 · ACK 전후 강제 종료
+
+Phase 2는 `phase2.ack_lab` Queue와 별도 Python Consumer 프로세스를 사용합니다. Phase 1의 `hello` Queue와 Consumer에 영향을 주지 않습니다.
+
+실험 A:
+
+1. 메시지 1개를 발행하고 Consumer를 시작합니다.
+2. **업무 반영** 버튼으로 학습용 기록을 디스크에 저장합니다.
+3. ACK를 보내기 전에 **Consumer 강제 종료**를 누릅니다.
+4. Consumer를 다시 시작합니다. Message ID는 같고 Attempt ID는 새로 생깁니다. `redelivered=true`를 확인합니다.
+5. 업무를 다시 반영합니다. 같은 메시지의 업무 반영 횟수가 2가 됩니다.
+6. ACK를 보내고 Queue가 비는지 확인한 뒤 정상 종료합니다.
+
+실험 B:
+
+1. 새 메시지 1개를 발행하고 Consumer를 시작합니다.
+2. 업무 반영 후 ACK를 보냅니다.
+3. **Ready·Unacked가 0으로 수집된 것을 확인한 뒤** 강제 종료합니다.
+4. Consumer를 다시 시작해 메시지가 재전달되지 않는지 확인합니다.
+
+ACK_SENT와 Broker의 ACK 처리 시각은 다릅니다. ACK 직후 무조건 재전달이 없다고 단정하지 않고 Queue 지표까지 확인합니다. 실제 Broker의 연결 종료 감지와 지표 수집에는 지연이 있을 수 있습니다.
+
+업무 반영은 `data/phase2-effects.jsonl`에 append·flush·fsync하는 학습용 효과입니다. 실제 결제·이메일·외부 API 호출을 하지 않습니다. Consumer나 API를 재시작해도 이 파일은 유지됩니다. Phase 2는 의도적으로 Message ID별 멱등 처리를 하지 않습니다. 같은 시도에서 중복 클릭은 막지만, 재전달된 새로운 시도는 업무를 다시 반영할 수 있습니다. Phase 6에서 이를 해결합니다.
+
+관리 API는 고정된 실습 프로세스의 `start/process/ack/stop/crash`만 허용합니다. 임의 명령, 실행 파일, PID, Docker 제어 권한을 UI에서 받지 않습니다. Linux 컨테이너의 강제 종료는 해당 자식 프로세스에 SIGKILL을 보내며, API와 RabbitMQ는 유지됩니다.
+
 ## Python으로 직접 실습
 
 UI와 API를 거치지 않는 Pika Producer:
@@ -67,13 +95,16 @@ API는 한 프로세스로 실행하세요. 교육용 Consumer 컨트롤러는 �
 
 ## 검증
 
+실제 Docker·RabbitMQ 환경에서 Phase 1과 Phase 2를 검증했습니다. 환경, 결과와 범위는 [검증 기록](docs/verification.md)을 참고하세요.
+
 실제 Broker 통합 검증(Queue에 기존 메시지나 Consumer가 있으면 중단하며 자동 purge하지 않습니다):
 
 ```powershell
 docker compose exec api python scripts/smoke.py
+docker compose exec api python scripts/smoke_phase2.py
 ```
 
-API와 잘못된 ACK 방어 검증:
+API·ACK 방어·업무 효과 저장 검증:
 
 ```powershell
 docker compose exec api python -m unittest discover -s tests
@@ -110,6 +141,6 @@ RabbitMQ volume과 `data/events.jsonl`은 유지됩니다. 기존 RabbitMQ volum
 
 ## 다음 단계
 
-`docs/learning-plan.md`의 완료 기준을 따라 Phase 2부터 확장합니다. 데이터베이스·Kombu·Celery·Pyro는 각 학습 단계에서 도입합니다.
+`docs/learning-plan.md`의 완료 기준을 따라 Phase 3부터 확장합니다. 데이터베이스·Kombu·Celery·Pyro는 각 학습 단계에서 도입합니다.
 
 공식 자료: [RabbitMQ Python 튜토리얼](https://www.rabbitmq.com/tutorials), [ACK와 Confirm](https://www.rabbitmq.com/docs/confirms), [Pika](https://pika.readthedocs.io/en/stable/), [Vue](https://vuejs.org/guide/quick-start.html).

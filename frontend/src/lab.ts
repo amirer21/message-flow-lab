@@ -1,4 +1,4 @@
-import type { LabEvent, Pending, Snapshot } from './types'
+import type { Effect, LabEvent, Pending, Snapshot } from './types'
 type Message = { message_id: string; body: string; redelivered: boolean }
 export class DemoLab {
   private messages: Message[] = []
@@ -7,13 +7,17 @@ export class DemoLab {
   private active = false
   private sent = 0
   private acked = 0
+  private effects: Effect[] = []
+  private readonly queue: string
+  private readonly requiresProcessing: boolean
+  constructor(queue = 'hello', requiresProcessing = false) { this.queue = queue; this.requiresProcessing = requiresProcessing }
   private record(type: string, message: Message | Pending, attempt?: string) {
     this.events.push({ event_id: crypto.randomUUID(), message_id: message.message_id, attempt_id: attempt, event_type: type, timestamp: new Date().toISOString(), worker: type === 'PUBLISH_SENT' ? 'producer-demo' : 'consumer-demo', metadata: { body: message.body, redelivered: message.redelivered } })
   }
   private deliver() {
     if (!this.active || this.pending || !this.messages.length) return
     const message = this.messages.shift()!
-    this.pending = { ...message, attempt_id: crypto.randomUUID() }
+    this.pending = { ...message, attempt_id: crypto.randomUUID(), processed: false }
     this.record('DELIVERED', message, this.pending.attempt_id)
   }
   publish(body: string, count: number) {
@@ -30,9 +34,27 @@ export class DemoLab {
   }
   ack(attempt: string) {
     if (!this.pending || this.pending.attempt_id !== attempt) throw new Error('현재 전달과 일치하지 않는 ACK입니다.')
+    if (this.requiresProcessing && !this.pending.processed) throw new Error('업무 반영을 확인한 뒤 ACK를 보내세요.')
     this.record('ACK_SENT', this.pending, attempt); this.acked++; this.pending = null; this.deliver()
   }
-  snapshot(): Snapshot { return { queue: { name: 'hello', ready: this.messages.length, unacked: this.pending ? 1 : 0, consumers: this.active ? 1 : 0 }, pending: this.pending ? { ...this.pending } : null, consumer_active: this.active, events: [...this.events].reverse(), total_sent: this.sent, ack_sent: this.acked, collected_at: new Date().toISOString() } }
+  process(attempt: string) {
+    if (!this.pending || this.pending.attempt_id !== attempt) throw new Error('현재 전달과 일치하지 않는 처리 시도입니다.')
+    if (this.pending.processed) throw new Error('이 처리 시도는 이미 업무를 반영했습니다.')
+    this.pending.processed = true
+    this.effects.push({ effect_id: crypto.randomUUID(), message_id: this.pending.message_id, attempt_id: attempt, timestamp: new Date().toISOString() })
+    this.record('PROCESSED', this.pending, attempt)
+  }
+  crash() {
+    const message = this.pending || { message_id: '', body: '', redelivered: false }
+    this.record('WORKER_KILLED', message, this.pending?.attempt_id)
+    if (this.pending) { this.messages.unshift({ ...this.pending, redelivered: true }); this.pending = null }
+    this.active = false
+  }
+  snapshot(): Snapshot {
+    const counts: Record<string, number> = {}
+    for (const effect of this.effects) counts[effect.message_id] = (counts[effect.message_id] || 0) + 1
+    return { queue: { name: this.queue, ready: this.messages.length, unacked: this.pending ? 1 : 0, consumers: this.active ? 1 : 0 }, pending: this.pending ? { ...this.pending } : null, consumer_active: this.active, events: [...this.events].reverse(), total_sent: this.sent, ack_sent: this.acked, collected_at: new Date().toISOString(), effects: [...this.effects].reverse(), effect_counts: counts, effects_total: this.effects.length }
+  }
 }
 
 export async function request<T>(base: string, token: string, path: string, body?: unknown): Promise<T> {

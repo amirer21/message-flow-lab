@@ -21,8 +21,10 @@ class EventStore:
         self._lock = Lock()
         self.sent = 0
         self.acked = 0
+        self._counts = {}
 
     def record(self, event_type, message_id="", *, attempt_id=None, worker=None, **metadata):
+        metadata.setdefault("queue", settings.queue)
         event = {
             "event_id": str(uuid4()), "event_type": event_type, "message_id": message_id,
             "attempt_id": attempt_id, "worker": worker,
@@ -32,6 +34,9 @@ class EventStore:
             self._events.append(event)
             self.sent += event_type == "PUBLISH_SENT"
             self.acked += event_type == "ACK_SENT"
+            counts = self._counts.setdefault(metadata["queue"], {"total_sent": 0, "ack_sent": 0})
+            counts["total_sent"] += event_type == "PUBLISH_SENT"
+            counts["ack_sent"] += event_type == "ACK_SENT"
             try:
                 path = Path(settings.event_log)
                 path.parent.mkdir(parents=True, exist_ok=True)
@@ -41,9 +46,11 @@ class EventStore:
                 logging.getLogger(__name__).exception("Event journal write failed")
         return event
 
-    def view(self):
+    def view(self, queue=None):
         with self._lock:
-            return {"events": list(reversed(self._events)), "total_sent": self.sent, "ack_sent": self.acked}
+            records = [event for event in reversed(self._events) if queue is None or event["metadata"]["queue"] == queue]
+            counts = self._counts.get(queue, {"total_sent": 0, "ack_sent": 0}) if queue else {"total_sent": self.sent, "ack_sent": self.acked}
+            return {"events": records, **counts}
 
 
 events = EventStore()

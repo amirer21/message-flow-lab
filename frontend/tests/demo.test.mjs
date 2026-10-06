@@ -37,3 +37,29 @@ test('closing without ACK requeues the same message with a new attempt', () => {
   assert.notEqual(first.attempt_id, second.attempt_id)
   assert.equal(second.redelivered, true)
 })
+
+test('Phase 2 reproduces a duplicate business effect after crash before ACK', () => {
+  const lab = new DemoLab('phase2.ack_lab', true)
+  lab.publish('business', 1); lab.start()
+  const first = lab.snapshot().pending
+  lab.process(first.attempt_id); lab.crash(); lab.start()
+  const second = lab.snapshot().pending
+  assert.equal(first.message_id, second.message_id)
+  assert.notEqual(first.attempt_id, second.attempt_id)
+  assert.equal(second.redelivered, true)
+  lab.process(second.attempt_id); lab.ack(second.attempt_id)
+  assert.equal(lab.snapshot().effect_counts[first.message_id], 2)
+  assert.equal(lab.snapshot().queue.unacked, 0)
+})
+
+test('Phase 2 acknowledged message is not redelivered after crash', () => {
+  const lab = new DemoLab('phase2.ack_lab', true)
+  lab.publish('business', 1); lab.start()
+  const pending = lab.snapshot().pending
+  assert.throws(() => lab.ack(pending.attempt_id))
+  lab.process(pending.attempt_id); lab.ack(pending.attempt_id)
+  lab.crash(); lab.start()
+  assert.equal(lab.snapshot().pending, null)
+  assert.equal(lab.snapshot().effect_counts[pending.message_id], 1)
+  assert.equal(lab.snapshot().queue.ready, 0)
+})
