@@ -1,0 +1,56 @@
+<script setup lang="ts">
+import { computed, onBeforeUnmount, ref, watch } from 'vue'
+import { Activity, Check, CheckCircle2, ChevronRight, CircleHelp, Download, Layers3, Play, Send, Settings2 } from 'lucide-vue-next'
+import { request } from './lab'
+import { defaults, RoutingDemo, topicMatches } from './routing'
+import type { ExchangeKind, RoutingSnapshot } from './routing'
+const props = defineProps<{ active: boolean; mode: 'demo'|'live'; editable: boolean; gateway: string; token: string; checks: boolean[] }>()
+const emit=defineEmits<{ disconnect:[message:string]; check:[index:number]; notes:[]; guide:[] }>()
+const demo=new RoutingDemo(), data=ref<RoutingSnapshot>(demo.snapshot()), live=ref<RoutingSnapshot|null>(null)
+const kind=ref<ExchangeKind>('direct'), bindings=ref([...defaults.direct]), key=ref('error'), body=ref('routing-message'), prediction=ref<string[]>([]), busy=ref(false), failure=ref(''), explain=ref(false)
+let generation=0
+const kinds: ExchangeKind[]=['direct','fanout','topic']
+const descriptions={ direct:'Binding Key와 정확히 일치하는 Queue에 전달',fanout:'Routing Key와 관계없이 모든 연결 Queue에 복사',topic:'점으로 구분된 단어를 *와 # 패턴으로 비교' }
+const rules=computed(()=>data.value.queues.filter(queue=>data.value.exchange_type==='fanout'||(data.value.exchange_type==='direct'?queue.binding===key.value:topicMatches(queue.binding,key.value))).map(queue=>queue.id.toUpperCase()))
+const criteria=['Direct·Fanout·Topic의 차이를 수신 결과로 설명한다.','Binding과 Routing Key로 수신 Queue를 예측하고 비교했다.','Fanout에서 같은 Message ID가 Queue별로 전달되는 것을 확인했다.']
+const names: Record<string,string>={PUBLISH_SENT:'발행 요청 전송',DELIVERED:'Queue에서 수신',ACK_SENT:'ACK 전송',TOPOLOGY_CREATED:'새 실험 시작',BINDINGS_CHANGED:'Binding 변경'}
+const short=(id:string)=>id.slice(0,8)
+const time=(t:string)=>new Date(t).toLocaleTimeString('ko-KR',{hour12:false})
+function choose(next:ExchangeKind){kind.value=next;bindings.value=[...defaults[next]];key.value=next==='topic'?'order.created':next==='fanout'?'ignored':'error';prediction.value=[];explain.value=false}
+function sync(snapshot:RoutingSnapshot){kind.value=snapshot.exchange_type;bindings.value=snapshot.queues.map(queue=>queue.binding)}
+async function read(syncForm=false){
+  if(!props.active||props.mode!=='live'||!props.editable||busy.value)return
+  const current=generation;busy.value=true
+  try{const next=await request<RoutingSnapshot>(props.gateway,props.token,'/routing/snapshot');if(current===generation){live.value=next;data.value=next;if(syncForm)sync(next);failure.value=''}}
+  catch(e){if(current===generation){failure.value='Routing 실습 연결이 끊겼습니다. 마지막 수집값을 유지합니다.';emit('disconnect',`${failure.value} ${e instanceof Error?e.message:''}`)}}
+  finally{busy.value=false}
+}
+watch(()=>[props.mode,props.active,props.editable,props.gateway,props.token],()=>{generation++;if(props.mode==='demo'){data.value=demo.snapshot();sync(data.value)}else if(live.value){data.value=live.value}void read(true)},{immediate:true})
+const timer=setInterval(()=>void read(),2000);onBeforeUnmount(()=>{clearInterval(timer);generation++})
+async function run(action:'setup'|'bindings'|'messages'|'receive'){
+  if(busy.value||!props.editable)return
+  if(action==='messages'&&(!body.value.trim()||body.value.length>4096)){failure.value='메시지는 1~4,096자로 입력하세요.';return}
+  if(new TextEncoder().encode(key.value).length>255||bindings.value.some(b=>new TextEncoder().encode(b).length>255)){failure.value='Routing Key와 Binding Key는 UTF-8 기준 255바이트 이하입니다.';return}
+  if(action==='bindings'&&kind.value!==data.value.exchange_type){failure.value='Exchange 종류를 바꾸려면 새 실험을 시작하세요.';return}
+  const current=generation;busy.value=true;failure.value=''
+  try{
+    if(props.mode==='demo'){if(action==='setup')demo.setup(kind.value,bindings.value);if(action==='bindings')demo.bind(bindings.value);if(action==='messages')demo.publish(body.value,key.value,prediction.value);if(action==='receive')demo.receive();data.value=demo.snapshot()}
+    else{const payload=action==='setup'||action==='bindings'?{exchange_type:kind.value,bindings:bindings.value}:action==='messages'?{body:body.value,routing_key:key.value,prediction:prediction.value}:{};const next=await request<RoutingSnapshot>(props.gateway,props.token,`/routing/${action}`,payload);if(current===generation){live.value=next;data.value=next}}
+  }catch(e){if(current===generation)failure.value=`${e instanceof Error?e.message:'요청 실패'} 발행을 자동 재시도하지 않습니다.`}
+  finally{busy.value=false}
+}
+</script>
+
+<template>
+  <div class="phase-three">
+    <div class="question-banner"><span class="question-icon"><CircleHelp :size="22"/></span><div><span>이번 실험의 질문</span><strong>같은 메시지라도 Exchange와 Binding이 달라지면 어디로 갈까?</strong></div><button class="text-button" @click="emit('guide')">개념 살펴보기 <ChevronRight :size="15"/></button></div>
+    <div v-if="failure" class="alert error" role="alert">{{failure}}</div>
+    <div class="exchange-choices"><button v-for="option in kinds" :key="option" class="scenario-card" :class="{chosen:kind===option}" @click="choose(option)"><span class="scenario-number">{{option.toUpperCase()}}</span><strong>{{option==='direct'?'정확히 일치':option==='fanout'?'모두에게 복사':'패턴으로 분기'}}</strong><span>{{descriptions[option]}}</span></button></div>
+    <section class="panel topology-controls"><div><h2><Settings2 :size="17"/> 실험 환경</h2><p>현재 Exchange: <strong>{{data.exchange_type.toUpperCase()}}</strong> · 임시 Queue 3개</p></div><button class="button secondary" :disabled="busy||!editable" @click="run('setup')"><Play :size="15"/> 선택한 종류로 새 실험</button><p class="hint">새 실험은 현재 Phase 3 Queue와 대기 메시지를 삭제합니다. API 연결이 종료돼도 임시 Queue는 삭제됩니다. Phase 1·2에는 영향을 주지 않습니다.</p></section>
+    <div class="routing-workspace"><section class="panel producer-panel"><div class="panel-heading"><h2><Send :size="17"/> 발행 전에 예측하기</h2><span class="small-badge">PRODUCER</span></div><label for="routing-body">Message payload</label><div class="editor"><textarea id="routing-body" v-model="body" rows="2" maxlength="4096" spellcheck="false"></textarea></div><label for="routing-key">Routing Key</label><input class="lab-input" id="routing-key" v-model="key" maxlength="255" spellcheck="false"/><p class="hint">{{data.exchange_type==='topic'?'예: order.created · payment.completed · order.created.eu':data.exchange_type==='fanout'?'Fanout은 이 값으로 Queue를 선택하지 않습니다.':'예: error · info · unmatched'}}</p><h3 class="prediction-heading">어느 Queue가 받을까요?</h3><div class="prediction-options"><label v-for="id in ['a','b','c']" :key="id"><input v-model="prediction" type="checkbox" :value="id"/> Queue {{id.toUpperCase()}}</label></div><p class="hint">전달될 Queue가 없다고 예상하면 모두 해제하세요.</p><button class="button primary" :disabled="busy||!editable||kind!==data.exchange_type" @click="run('messages')"><Send :size="15"/> 예측을 기록하고 발행</button><p v-if="kind!==data.exchange_type" class="hint">선택한 종류를 새 실험으로 적용한 뒤 발행하세요.</p><button class="text-button rule-toggle" @click="explain=!explain">{{explain?'규칙 예상 닫기':'Routing 규칙으로 예상 확인'}} <ChevronRight :size="14"/></button><div v-if="explain" class="concept-callout"><CircleHelp :size="17"/><div><strong>현재 입력의 규칙 예상: {{rules.length?rules.join(', '):'해당 Queue 없음'}}</strong><p v-if="data.exchange_type==='topic'">*는 한 단어, #는 0개 이상의 단어입니다. 실제 결과는 수신 버튼으로 확인하세요.</p><p v-else>설명용 계산 결과입니다. 실제 Broker의 전달을 관측한 기록은 아닙니다.</p></div></div></section>
+    <section class="panel route-panel"><div class="panel-heading"><h2><Layers3 :size="17"/> Binding과 Queue</h2><code class="subtle">{{data.exchange_type.toUpperCase()}}</code></div><div class="exchange-strip"><Layers3 :size="23"/><span>Exchange<strong>{{data.exchange}}</strong></span></div><div class="routing-queue-grid"><div v-for="(queue,index) in data.queues" :key="queue.id" class="routing-queue"><div class="queue-card-heading"><strong>Queue {{queue.id.toUpperCase()}}</strong><span><b>{{queue.ready}}</b> Ready</span></div><label :for="`binding-${queue.id}`">Binding Key</label><input class="lab-input" :id="`binding-${queue.id}`" v-model="bindings[index]" :disabled="kind==='fanout'" maxlength="255" spellcheck="false" :placeholder="kind==='fanout'?'Fanout에서는 무시됩니다':'Binding Key'"/><div class="received-copies"><template v-for="copy in data.last_received.filter(item=>item.queue_id===queue.id)" :key="copy.message_id"><span class="copy-label"><Download :size="13"/> {{mode==='demo'?'예시 수신 결과':'실제 수신 관측'}}</span><code>{{short(copy.message_id)}}</code><pre>{{copy.body}}</pre><span>Routing Key: {{copy.routing_key||'""'}}</span></template><span v-if="!data.last_received.some(item=>item.queue_id===queue.id)" class="empty-copy">이번 수신 시도에서 받은 메시지 없음</span></div></div></div><div class="button-row"><button class="button secondary" :disabled="busy||!editable||kind!==data.exchange_type" @click="run('bindings')"><Settings2 :size="15"/> Binding 적용</button><button class="button primary" :disabled="busy||!editable" @click="run('receive')"><Download :size="15"/> Queue별 한 개 수신 · ACK</button></div><p class="hint">Binding 변경은 앞으로 발행할 메시지에 적용됩니다. 이미 Queue에 쌓인 메시지는 그대로 남습니다. 수신 버튼은 각 Queue에서 최대 한 개씩 소비하고 ACK합니다.</p></section></div>
+    <section v-if="data.last_publish" class="panel routing-comparison"><div><span class="eyebrow">LATEST PUBLISH</span><strong>Message {{short(data.last_publish.message_id)}}</strong><span>Routing Key: {{data.last_publish.routing_key||'""'}} · 내 예측: {{data.last_publish.prediction.length?data.last_publish.prediction.map(id=>id.toUpperCase()).join(', '):'없음'}}</span></div><div><span>이 메시지의 이번 수신 관측</span><strong>{{data.last_received.filter(copy=>copy.message_id===data.last_publish?.message_id).map(copy=>copy.queue_id.toUpperCase()).join(', ')||'아직 관측한 수신 없음'}}</strong></div><p class="hint">과거 메시지가 먼저 수신될 수 있습니다. Message ID를 대조하세요. 발행 기록은 Publisher Confirm이 아니며, 미수신만으로 전송 성공이나 유실을 확정하지 않습니다.</p></section>
+    <div class="bottom-grid"><section class="panel events-panel"><div class="panel-heading"><h2><Activity :size="17"/> Queue별 관측 이벤트</h2><span class="subtle">{{mode==='demo'?'설명용 예시':'실제 RabbitMQ 수신'}}</span></div><div v-if="!data.events.length" class="events-empty">발행과 수신 결과를 비교해 보세요.</div><div class="event-table"><div class="event-table-head"><span>시각</span><span>이벤트 · Queue</span><span>Message ID</span></div><div v-for="event in data.events.slice(0,15)" :key="event.event_id" class="event-row"><code>{{time(event.timestamp)}}</code><span class="event-name">{{names[event.event_type]||event.event_type}} {{event.metadata.queue_id?String(event.metadata.queue_id).toUpperCase():''}}</span><code>{{event.message_id?short(event.message_id):'—'}}</code></div></div></section><section class="panel checklist-panel"><div class="panel-heading"><h2><CheckCircle2 :size="17"/> Phase 3 완료 기준</h2></div><button v-for="(criterion,index) in criteria" :key="criterion" class="check-row" @click="emit('check',index)"><span class="checkbox" :class="{checked:checks[index]}"><Check v-if="checks[index]" :size="13"/></span><span>{{criterion}}</span></button><div class="checklist-footer"><span>현재 기기에 저장됩니다.</span><button class="text-button" @click="emit('notes')">예측과 결과 기록 <ChevronRight :size="14"/></button></div></section></div>
+    <div class="mode-footnote"><CircleHelp :size="15"/><span>{{mode==='demo'?'예시 모드에서는 Routing을 시뮬레이션합니다. 실제 모드에서는 임시 Exchange와 Queue를 RabbitMQ에 생성합니다.':'Ready는 Broker에 직접 조회한 대기 메시지 수입니다. 수신 이벤트는 Queue별 소비 기록이며 Exchange 내부 통과 시각을 추정하지 않습니다.'}}</span></div>
+  </div>
+</template>

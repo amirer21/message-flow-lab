@@ -16,6 +16,7 @@ from .events import events
 from .effects import read_effects
 from .experiments import experiment
 from .messaging import connection, declare, publish
+from .routing import lab as routing_lab, router as routing_router
 
 
 @asynccontextmanager
@@ -25,15 +26,19 @@ async def lifespan(app):
     yield
     consumer.shutdown()
     experiment.shutdown()
+    routing_lab.shutdown()
 
 
-app = FastAPI(title="MessageFlow Lab · Phase 0–2", lifespan=lifespan)
+app = FastAPI(title="MessageFlow Lab · Phase 0–3", lifespan=lifespan)
 app.add_middleware(CORSMiddleware, allow_origins=list(settings.allowed_origins), allow_methods=["GET", "POST"], allow_headers=["Content-Type", "X-Lab-Token"])
 
 
 def authorize(x_lab_token: str = Header(default="")):
     if not settings.lab_token or not secrets.compare_digest(x_lab_token.encode(), settings.lab_token.encode()):
         raise HTTPException(status_code=401, detail="실습 토큰이 일치하지 않습니다.")
+
+
+app.include_router(routing_router, dependencies=[Depends(authorize)])
 
 
 class PublishRequest(BaseModel):
@@ -76,7 +81,7 @@ def queue_stats(queue=None):
 
 @app.get("/health")
 def health():
-    return {"status": "api-running", "phase": "0–2", "broker_checked": False}
+    return {"status": "api-running", "phase": "0–3", "broker_checked": False}
 
 
 @app.get("/snapshot", dependencies=[Depends(authorize)])

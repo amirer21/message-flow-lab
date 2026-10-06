@@ -13,14 +13,20 @@
 | 검증 | 결과 |
 |---|---|
 | Vue·TypeScript 빌드 | 통과 |
-| Python API·ACK·업무 기록 단위 검증 | 15개 통과 |
-| 브라우저 예시 상태 모델 검증 | 5개 통과 |
+| Python API·ACK·업무 기록 단위 검증 | 21개 통과 |
+| 브라우저 예시 상태 모델 검증 | 10개 통과 |
 | 실제 Phase 1 발행·소비 | 3개 발행 → Ready 3 → Unacked 1 → ACK 3회 → Queue 비움 |
 | 실제 Phase 2 ACK 전 종료 | Consumer 자식 프로세스 강제 종료 후 동일 Message ID 재전달, 새 Attempt ID, redelivered=true |
 | 실제 Phase 2 중복 업무 | 재전달 후 같은 메시지의 영속 업무 기록 2회 확인 |
 | 실제 Phase 2 ACK 후 종료 | Broker 지표에서 ACK 반영 확인 후 강제 종료·재시작, 재전달 없음, 업무 기록 1회 |
 
-실제 장애 실험은 Linux 컨테이너에서 제어기가 생성한 자식 프로세스를 강제 종료하여 확인했습니다. 외부 프로세스나 Broker를 종료하지 않았습니다. 검증 스크립트는 기존 메시지를 자동 삭제하지 않습니다.
+| 실제 Phase 3 Direct | error → A/C, info → B, unmatched → 수신 없음 |
+| 실제 Phase 3 Fanout | Routing Key와 무관하게 A/B/C에서 동일 Message ID 수신 |
+| 실제 Phase 3 Topic | order.created → A/C, payment.completed → B/C, order.created.eu → C |
+| 실제 Phase 3 # | order.# Binding은 order(추가 단어 0개) 수신 |
+| 실제 Phase 3 Binding 변경 | 기존 메시지 유지, 이후 발행에 새 Binding 적용, 종류 변경 요청 409 |
+
+실제 장애 실험은 Linux 컨테이너에서 제어기가 생성한 자식 프로세스를 강제 종료하여 확인했습니다. 외부 프로세스나 Broker를 종료하지 않았습니다. Phase 1·2 검증은 기존 메시지를 자동 삭제하지 않습니다. Phase 3 검증은 해당 단계의 임시 토폴로지·대기 메시지를 초기화합니다. 다른 단계 Queue는 삭제하지 않습니다.
 
 ## 범위
 
@@ -32,4 +38,5 @@ Celery·Kombu·Pyro5는 아직 구현 단계가 아닙니다. 현재 실습은 P
 docker compose up --build -d
 docker compose exec -T api python scripts/smoke.py
 docker compose exec -T api python scripts/smoke_phase2.py
+docker compose exec -T api python scripts/smoke_phase3.py
 ```

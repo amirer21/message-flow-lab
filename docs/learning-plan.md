@@ -1,4 +1,4 @@
-# 학습 로드맵 v2
+# 학습 로드맵 v3
 
 각 Phase는 질문 → 예측 → 구현 → 정상/실패 실험 → 관찰 → 설명 순서로 진행합니다. 달력보다 완료 기준을 우선합니다.
 
@@ -7,7 +7,7 @@
 | 0 | 최소 환경·AMQP·Management | 환경 시작/종료 재현, 포트 역할 설명 | 구현 |
 | 1 | Pika·Producer·Consumer·Manual ACK | 3개 발행 → Ready 3 → Unacked 1 → ACK 후 0 | 구현 |
 | 2 | 전달·ACK·Consumer 종료 | ACK 전/후 강제 종료, 재전달과 중복 업무 반영 비교 | 구현 |
-| 3 | Direct·Fanout·Topic Routing | Binding에 따른 수신 Queue 예측 | 예정 |
+| 3 | Direct·Fanout·Topic Routing | Binding에 따른 수신 Queue 예측 | 구현 |
 | 4 | Confirm·Return·Persistent·Durable | Broker 수락과 라우팅·업무 완료 구분 | 예정 |
 | 5 | Retry·Requeue·TTL·DLQ | 제한된 재시도와 영구 실패 격리 | 예정 |
 | 6 | PostgreSQL·멱등성 | 동시 중복 요청에도 업무 효과 한 번 | 예정 |
@@ -32,7 +32,9 @@ Phase 0~1: 단계별 안내, 예시/실제 연결, 메시지 발행, Queue 요�
 
 Phase 2: 별도 Queue와 실제 자식 Consumer 프로세스, ACK 전/후 강제 종료, 같은 메시지의 시도 이력, 영속 학습용 업무 반영 횟수.
 
-Phase 3~5: Routing, Confirm/Return, Retry와 DLQ 화면.
+Phase 3: Direct/Fanout/Topic의 임시 Exchange·Queue, Binding 편집, Queue 예측과 실제 복사본 수신 비교.
+
+Phase 4~5: Confirm/Return, Retry와 DLQ 화면.
 
 Phase 6~10: PostgreSQL 실험/관측 이벤트 저장, Worker 비교, Kombu 비교, Task 상세와 Celery 이벤트.
 
@@ -47,3 +49,7 @@ Quorum Queue 복제 장애와 안전한 dead-lettering, Celery Canvas/Beat/Autos
 ## 실험 기록
 
 질문, 고정 조건, 변경한 설정, 예상, 절차, 실제 지표/로그, 설명, 재실행·정리 방법을 기록합니다. 부하 실험에는 메시지 수·작업 시간·동시 실행 수·Worker 수·Prefetch를 함께 남깁니다.
+
+## 개발 인계
+
+후속 구현은 [남은 단계 개발 계획서](remaining-development-plan.md)와 [AI 에이전트 작업 지침](ai-agent-instructions.md)을 따릅니다. 다음 구현 단계는 Phase 4입니다.
