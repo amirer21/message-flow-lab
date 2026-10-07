@@ -13,7 +13,7 @@
 | 검증 | 결과 |
 |---|---|
 | Vue·TypeScript 빌드 | 통과 |
-| Python API·ACK·업무 기록·신뢰성 단위 검증 | 33개 통과 |
+| Python API·ACK·업무 기록·신뢰성·재시도 단위 검증 | 통과 |
 | 브라우저 예시 상태 모델 검증 | 17개 통과 |
 | 실제 Phase 1 발행·소비 | 3개 발행 → Ready 3 → Unacked 1 → ACK 3회 → Queue 비움 |
 | 실제 Phase 2 ACK 전 종료 | Consumer 자식 프로세스 강제 종료 후 동일 Message ID 재전달, 새 Attempt ID, redelivered=true |
@@ -33,6 +33,10 @@
 | 실제 Phase 4 Transient | delivery_mode=1 → auto_delete Queue C 보관, Confirm ACK |
 | 실제 Phase 4 수신·ACK | 3개 Queue에서 수신, delivery_mode 보존, 수신 후 Ready=0 |
 | 실제 Phase 4 이벤트 완전성 | TOPOLOGY_CREATED, PUBLISH_SENT, PUBLISH_CONFIRMED, PUBLISH_RETURNED, DELIVERED, ACK_SENT 모두 기록 |
+| 실제 Phase 5 영구 실패 | permanent 시나리오 → 즉시 DLQ 격리 |
+| 실제 Phase 5 일시 실패 2회 | transient_2x → 2회 실패, TTL 대기 후 3번째 성공 |
+| 실제 Phase 5 재시도 한도 초과 | retry_exceed → 3회 재시도 후 DLQ |
+| 실제 Phase 5 이벤트 완전성 | TOPOLOGY_CREATED, PUBLISH_SENT, PUBLISH_CONFIRMED, PROCESSING_STARTED, PROCESSING_FAILED, PROCESSING_SUCCEEDED, RETRY_SCHEDULED, RETRY_RETURNED, DLQ_STORED, ACK_SENT 모두 기록 |
 
 실제 장애 실험은 Linux 컨테이너에서 제어기가 생성한 자식 프로세스를 강제 종료하여 확인했습니다. 외부 프로세스나 Broker를 종료하지 않았습니다. Phase 1·2 검증은 기존 메시지를 자동 삭제하지 않습니다. Phase 3·4 검증은 해당 단계의 임시 토폴로지·대기 메시지를 초기화합니다. 다른 단계 Queue는 삭제하지 않습니다.
 
@@ -54,4 +58,5 @@ docker compose exec -T api python scripts/smoke.py
 docker compose exec -T api python scripts/smoke_phase2.py
 docker compose exec -T api python scripts/smoke_phase3.py
 docker compose exec -T api python scripts/smoke_phase4.py
+docker compose exec -T api python scripts/smoke_phase5.py
 ```

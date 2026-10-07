@@ -1,6 +1,6 @@
 # MessageFlow Lab · 도구와 코드 해설
 
-작성일: 2026-10-06 · 기준: Phase 0–3 / v0.3.0
+작성일: 2026-10-07 · 기준: Phase 0–5 / v0.5.0
 
 각 단계의 함수 호출 순서·입출력·데이터 흐름을 상세히 읽으려면 [Phase별 코드 학습 안내](phase-code-study.md)를 함께 보세요.
 
@@ -376,3 +376,38 @@ with Pyro5.api.Proxy(service_uri) as calculator:
 8. Celery `delay()`와 Pyro5 Proxy 호출은 호출자의 대기 방식이 어떻게 다른가?
 
 이 질문의 답을 현재 코드와 실험 기록에서 찾은 뒤 Phase 4로 진행하면 발행 확인·Return·장애 처리의 차이를 이해하기 쉽습니다.
+
+## Phase 5 · 실패, Retry, DLQ
+
+### 핵심 파일
+
+| 파일 | 역할 |
+|---|---|
+| `backend/app/retry.py` | RetryLab 클래스 + `/retry/*` APIRouter |
+| `frontend/src/PhaseFive.vue` | Phase 5 실험 화면 |
+| `frontend/src/retry.ts` | DemoRetry 브라우저 시뮬레이션 |
+| `backend/tests/test_retry.py` | 단위 테스트 |
+| `scripts/smoke_phase5.py` | 통합 검증 |
+
+### 토폴로지
+
+Phase 5는 3개의 Exchange와 3개의 Queue를 사용합니다.
+
+- **work exchange/queue**: 작업 메시지 수신
+- **retry exchange/queue**: TTL 5초, DLX로 work exchange 지정 → 만료 시 work queue로 복귀
+- **dead exchange/queue**: 영구 실패 또는 재시도 한도 초과 메시지 격리
+
+### 처리 의사결정
+
+`process()` 호출 시 work queue에서 메시지 1개를 가져와 시나리오별 판정:
+- `transient_2x`: retry_count < 2이면 retry, ≥ 2이면 success
+- `permanent`: 항상 DLQ (영구 실패)
+- `retry_exceed`: retry_count < MAX_RETRIES(3)이면 retry, ≥ 3이면 DLQ
+
+retry 시: 새 메시지를 retry exchange에 발행 (x-retry-count 증가) → 원본 ACK
+DLQ 시: dead exchange에 발행 → 원본 ACK
+성공 시: 원본 ACK
+
+### Retry와 Requeue의 차이
+
+즉시 `basic_nack(requeue=True)`는 메시지를 Queue 앞에 돌려놓아 즉시 재전달됩니다. CPU와 네트워크를 계속 차지하며 횟수 제한이 없습니다. 별도 retry Queue에 TTL을 설정하면 대기 시간을 두고 헤더로 횟수를 추적·제한할 수 있습니다.

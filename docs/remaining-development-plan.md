@@ -14,7 +14,9 @@ MessageFlow Lab은 Python 메시지 큐를 단계별로 배우는 한국어 학�
 | Phase 1 | Pika 발행, Prefetch 1, Manual ACK, Ready/Unacked, 실제 3개 발행·소비 검증 |
 | Phase 2 | 독립 자식 Consumer, 업무 기록 후 ACK 전/후 강제 종료, 재전달·중복 효과 실험 |
 | Phase 3 | Direct/Fanout/Topic, Binding 편집, Queue 예측, Queue별 수신·ACK, 실제 Routing 검증 |
-| Phase 4–12 | 학습 가이드·완료 기준은 존재. 실제 실습 기능은 미구현 |
+| Phase 4 | Confirm·Return·Persistent·Durable, 발행 신뢰성 실험 |
+| Phase 5 | Retry·TTL·DLQ, 일시/영구 실패 분류, 재시도 한도 |
+| Phase 6–12 | 학습 가이드·완료 기준은 존재. 실제 실습 기능은 미구현 |
 
 현재 Python 단위 검증 21개, 예시 모델 검증 10개와 Vue/TypeScript 빌드가 통과했습니다. 자세한 실제 실행 결과는 [검증 기록](verification.md)에 있습니다. Celery·Kombu·Pyro5·PostgreSQL은 아직 설치·연동되지 않았습니다. `Pika`와 `Pyro5`는 서로 다른 라이브러리입니다.
 
