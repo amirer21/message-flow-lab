@@ -18,6 +18,7 @@ from .experiments import experiment
 from .messaging import connection, declare, publish
 from .reliability import lab as reliability_lab, router as reliability_router
 from .retry import lab as retry_lab, router as retry_router
+from .idempotency import lab as idempotency_lab, router as idempotency_router
 from .routing import lab as routing_lab, router as routing_router
 
 
@@ -31,9 +32,10 @@ async def lifespan(app):
     routing_lab.shutdown()
     reliability_lab.shutdown()
     retry_lab.shutdown()
+    idempotency_lab.shutdown()
 
 
-app = FastAPI(title="MessageFlow Lab · Phase 0–5", lifespan=lifespan)
+app = FastAPI(title="MessageFlow Lab · Phase 0–6", lifespan=lifespan)
 app.add_middleware(CORSMiddleware, allow_origins=list(settings.allowed_origins), allow_methods=["GET", "POST"], allow_headers=["Content-Type", "X-Lab-Token"])
 
 
@@ -45,6 +47,7 @@ def authorize(x_lab_token: str = Header(default="")):
 app.include_router(routing_router, dependencies=[Depends(authorize)])
 app.include_router(reliability_router, dependencies=[Depends(authorize)])
 app.include_router(retry_router, dependencies=[Depends(authorize)])
+app.include_router(idempotency_router, dependencies=[Depends(authorize)])
 
 
 class PublishRequest(BaseModel):
@@ -87,7 +90,7 @@ def queue_stats(queue=None):
 
 @app.get("/health")
 def health():
-    return {"status": "api-running", "phase": "0–5", "broker_checked": False}
+    return {"status": "api-running", "phase": "0–6", "broker_checked": False}
 
 
 @app.get("/snapshot", dependencies=[Depends(authorize)])

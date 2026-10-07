@@ -14,3 +14,18 @@ export type RetryEvent = { event_id: string; message_id: string; event_type: str
 export type RetryQueueInfo = { id: string; name: string; role: string; label: string; ready: number | null }
 export type RetryProcessResult = { message_id: string; scenario: string; retry_count: number; outcome: 'success' | 'retry' | 'dlq'; confirmed: boolean }
 export type RetrySnapshot = { work_exchange: string | null; queues: RetryQueueInfo[]; events: RetryEvent[]; last_publish: { message_id: string; scenario: string; confirmed: boolean } | null; last_process: RetryProcessResult | null; collected_at: string }
+
+export type IdempotencyScenario = 'normal' | 'duplicate' | 'crash_after_commit'
+export type IdempotencyEvent = { event_id: string; message_id: string; event_type: string; timestamp: string; worker: string; metadata: Record<string, unknown> }
+export type IdempotencyQueueInfo = { id: string; name: string; role: string; label: string; ready: number | null }
+export type BusinessEffect = { id: number; consumer_scope: string; idempotency_key: string; amount: number; created_at: string }
+export type IdempotencySnapshot = {
+  work_exchange: string | null
+  queues: IdempotencyQueueInfo[]
+  events: IdempotencyEvent[]
+  effects: BusinessEffect[]
+  processed_count: number
+  last_publish: { message_id: string; idempotency_key: string; confirmed: boolean } | null
+  last_process: { message_id: string; idempotency_key: string; outcome: 'applied' | 'skipped'; was_duplicate: boolean } | null
+  collected_at: string
+}
